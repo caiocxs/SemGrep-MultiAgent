@@ -16,12 +16,6 @@ prompt_1 = agent_c.read_text(encoding="utf-8")
 
 code_401 = Path("dataset_cwe401/")
 
-messages = [
-    {"role": "system", "content": ""},
-    {"role": "user", "content": "Olá!"},
-]
-
-
 for i in range(1):
     file_c = next(code_401.rglob("*.c"), None)
     if(not file_c):
