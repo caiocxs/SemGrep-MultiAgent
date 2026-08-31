@@ -220,7 +220,7 @@ models/
 
 # Datasets
 datasets/
-dataset_cwe401/
+dataset_*/
 
 # Streamlit
 .streamlit/secrets.toml

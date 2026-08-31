@@ -11,7 +11,7 @@ llm = Llama(
     verbose=False
 )
 
-agent_c = Path("prompts/agent_c.md");
+agent_c = Path("prompts/code_analyser.md");
 prompt_1 = agent_c.read_text(encoding="utf-8")
 
 code_401 = Path("dataset_cwe401/")
