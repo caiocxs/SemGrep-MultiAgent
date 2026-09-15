@@ -222,5 +222,8 @@ models/
 datasets/
 dataset_*/
 
+# Logs
+logs/
+
 # Streamlit
 .streamlit/secrets.toml

@@ -1,0 +1,5 @@
+# Core runtime dependencies for src/
+python-dotenv>=1.0.0
+
+# llama-cpp-python is installed separately (see README) because the GPU build
+# requires a CUDA-enabled wheel/compile step that plain pip cannot express here.

@@ -9,12 +9,55 @@ import os
 import json
 import re
 from dotenv import load_dotenv
+from llama_cpp import LlamaGrammar
 
 load_dotenv()
 
 llm = None
 prompt = None
 files = None
+
+# Mirrors the "Output Schema" in prompts/code_analyser.md. Passed to
+# create_chat_completion as a grammar so generation is constrained to valid
+# JSON matching this shape, instead of relying on best-effort parsing of
+# free-form text after the fact.
+RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "vulnerable": {"type": "boolean"},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "cwe": {"type": "string"},
+                    "severity": {"type": "string"},
+                    "pointer": {"type": "string"},
+                    "source_pattern": {"type": "string"},
+                    "source_line": {"type": "integer"},
+                    "violation_line": {"type": "integer"},
+                    "path": {"type": "array", "items": {"type": "string"}},
+                    "description": {"type": "string"},
+                    "fix": {"type": "string"},
+                },
+                "required": [
+                    "cwe", "severity", "pointer", "source_line",
+                    "violation_line", "description", "fix",
+                ],
+            },
+        },
+    },
+    "required": ["vulnerable", "findings"],
+}
+
+_grammar = None
+
+
+def get_grammar():
+    global _grammar
+    if _grammar is None:
+        _grammar = LlamaGrammar.from_json_schema(json.dumps(RESPONSE_SCHEMA), verbose=False)
+    return _grammar
 
 
 def extract_json(text: str):
@@ -107,7 +150,8 @@ def start_code_analysis(logs_dir=None, skip_existing=True):
         response = llm.create_chat_completion(
             messages=messages,
             max_tokens=4096,  # Limite de tamanho da resposta
-            temperature=0.1  # Criatividade (0 = objetivo, 1 = muito criativo)
+            temperature=0.1,  # Criatividade (0 = objetivo, 1 = muito criativo)
+            grammar=get_grammar(),
         )
 
         total_time = time.time() - init
