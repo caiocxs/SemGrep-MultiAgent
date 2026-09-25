@@ -17,38 +17,135 @@ llm = None
 prompt = None
 files = None
 
-# Mirrors the "Output Schema" in prompts/code_analyser.md. Passed to
+TARGET_CWES = ["CWE-401", "CWE-415", "CWE-416", "CWE-457", "CWE-476"]
+
+# Mirrors the "Output" section in prompts/code_analyser_v2.md. Passed to
 # create_chat_completion as a grammar so generation is constrained to valid
-# JSON matching this shape, instead of relying on best-effort parsing of
-# free-form text after the fact.
+# JSON matching this shape. Field order matters: the grammar makes the model
+# write "analysis" and the evidence first and only then the "vulnerable"
+# verdict, so the verdict can't be committed to before any reasoning happens.
 RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
-        "vulnerable": {"type": "boolean"},
+        "analysis": {"type": "string"},
         "findings": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "cwe": {"type": "string"},
-                    "severity": {"type": "string"},
+                    "cwe": {"enum": TARGET_CWES},
                     "pointer": {"type": "string"},
-                    "source_pattern": {"type": "string"},
                     "source_line": {"type": "integer"},
+                    "source_code": {"type": "string"},
                     "violation_line": {"type": "integer"},
+                    "violation_code": {"type": "string"},
                     "path": {"type": "array", "items": {"type": "string"}},
+                    "refutation_attempt": {"type": "string"},
                     "description": {"type": "string"},
-                    "fix": {"type": "string"},
                 },
                 "required": [
-                    "cwe", "severity", "pointer", "source_line",
-                    "violation_line", "description", "fix",
+                    "cwe", "pointer", "source_line", "source_code",
+                    "violation_line", "violation_code", "path",
+                    "refutation_attempt", "description",
                 ],
             },
         },
+        "vulnerable": {"type": "boolean"},
     },
-    "required": ["vulnerable", "findings"],
+    "required": ["analysis", "findings", "vulnerable"],
 }
+
+# Juliet test cases name their functions/types/globals after the CWE and the
+# expected verdict (e.g. "CWE401_Memory_Leak__char_calloc_01_bad", "goodG2B",
+# "badSink"), which hands the answer to the model. Every such identifier is
+# renamed to a neutral one, consistently within a file so distinct symbols
+# stay distinct.
+_LEAKY_IDENT_RE = re.compile(
+    r"\b_*(?:CWE\d+_\w+|(?:good|bad)(?:[A-Z0-9]\w*)?|helper(?:Good|Bad)\w*)\b"
+)
+# String literals that also give the verdict away: "GoodSink"/"BadSink" and
+# "Good", which Juliet uses almost only in the good variants.
+_LEAKY_STRING_RE = re.compile(r'"(?:Good|Bad)(Sink|Source)"')
+_GOOD_LITERAL_RE = re.compile(r'"Good"')
+
+
+def sanitize_code(code: str) -> str:
+    mapping = {}
+
+    def neutral_name(match):
+        ident = match.group(0)
+        if ident not in mapping:
+            if ident.endswith("Type"):
+                kind = "type"
+            elif ident.endswith(("Global", "Data")):
+                kind = "var"
+            else:
+                kind = "func"
+            mapping[ident] = f"{kind}_{len(mapping) + 1}"
+        return mapping[ident]
+
+    code = _LEAKY_IDENT_RE.sub(neutral_name, code)
+    code = _LEAKY_STRING_RE.sub(r'"\1"', code)
+    return _GOOD_LITERAL_RE.sub('"Text"', code)
+
+
+def number_lines(code: str) -> str:
+    return "\n".join(f"L{i}| {line}" for i, line in enumerate(code.splitlines(), start=1))
+
+
+def _squash(text) -> str:
+    return re.sub(r"\s+", "", text) if isinstance(text, str) else ""
+
+
+def validate_finding(finding, lines):
+    """
+    Returns None if the finding's evidence really exists in the analyzed code,
+    otherwise the reason it was rejected. Checks that both cited lines exist,
+    that the quoted code matches them and that the pointer appears in the
+    violation line - the cheapest way to drop hallucinated findings.
+    """
+    if not isinstance(finding, dict):
+        return "not an object"
+    if finding.get("cwe") not in TARGET_CWES:
+        return "cwe out of scope"
+    for kind in ("source", "violation"):
+        line_no = finding.get(f"{kind}_line")
+        if not isinstance(line_no, int) or not 1 <= line_no <= len(lines):
+            return f"{kind}_line out of range"
+        quoted = _squash(finding.get(f"{kind}_code"))
+        if not quoted or quoted not in _squash(lines[line_no - 1]):
+            return f"{kind}_code does not match line {line_no}"
+    pointer = finding.get("pointer")
+    if not isinstance(pointer, str) or not pointer.strip():
+        return "missing pointer"
+    # Accept "data", "*data" or "s->field" as long as the base identifier is on the line.
+    base = re.findall(r"[A-Za-z_]\w*", pointer)
+    if not base or not re.search(rf"\b{re.escape(base[0])}\b", lines[finding["violation_line"] - 1]):
+        return "pointer not in violation line"
+    return None
+
+
+def apply_validation(json_res, lines):
+    """
+    Keeps only findings with verifiable evidence and derives the verdict from
+    them, instead of trusting the model's own "vulnerable" field. The model's
+    raw verdict and the rejected findings are kept in the log for analysis.
+    """
+    findings = json_res.get("findings")
+    findings = findings if isinstance(findings, list) else []
+    kept, rejected = [], []
+    for finding in findings:
+        reason = validate_finding(finding, lines)
+        if reason is None:
+            kept.append(finding)
+        else:
+            rejected.append({"reason": reason, "finding": finding})
+    json_res["model_vulnerable"] = json_res.get("vulnerable")
+    json_res["findings"] = kept
+    json_res["rejected_findings"] = rejected
+    json_res["vulnerable"] = bool(kept)
+    return json_res
+
 
 _grammar = None
 
@@ -107,7 +204,7 @@ def extract_json(text: str):
     return None
 
 
-def init_agent(model="QWEN_CODE", prompt_name="code_analyser", dataset="CWES_BAD"):
+def init_agent(model="QWEN_CODE", prompt_name="code_analyser_v2", dataset="CWES_BAD"):
     global llm, prompt, files
     print(f"Initializing code agent (dataset={dataset})...\n")
     agents_general.init_model(model)
@@ -136,8 +233,9 @@ def start_code_analysis(logs_dir=None, skip_existing=True):
             print(f"[{idx}/{total_files}] Skipping {file.name} (log already exists).")
             continue
 
-        code = file.read_text(encoding='utf-8')
-        final_prompt = prompt.replace("{{CODE}}", code)
+        code = sanitize_code(file.read_text(encoding='utf-8'))
+        code_lines = code.splitlines()
+        final_prompt = prompt.replace("{{CODE}}", number_lines(code))
         
         messages = [
             {"role": "user", "content": final_prompt}
@@ -150,7 +248,7 @@ def start_code_analysis(logs_dir=None, skip_existing=True):
         response = llm.create_chat_completion(
             messages=messages,
             max_tokens=4096,  # Limite de tamanho da resposta
-            temperature=0.1,  # Criatividade (0 = objetivo, 1 = muito criativo)
+            temperature=0.0,  # 0 = determinístico, reprodutível entre execuções
             grammar=get_grammar(),
         )
 
@@ -161,6 +259,7 @@ def start_code_analysis(logs_dir=None, skip_existing=True):
         json_res = extract_json(result)
         if json_res is not None:
             if isinstance(json_res, dict):
+                json_res = apply_validation(json_res, code_lines)
                 json_res["execution_time_in_seconds"] = round(total_time, 2)
             output_content = json.dumps(json_res, indent=4, ensure_ascii=False)
         else:
