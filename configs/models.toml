@@ -1,0 +1,53 @@
+# Catalog of GGUF models used by the combos in configs/combos/.
+# Each entry is referenced by its key (e.g. "qwen_coder_3b_q6") from a combo's
+# [roles.*] tables. Files are expected under .models/<file>; download URL is
+# https://huggingface.co/<repo>/resolve/main/<file>.
+#
+# size_gb is the GGUF file size (weights only). The KV cache and compute
+# buffers come on top of it, so on a 6 GB card (GTX 1060) keep
+# size_gb + context overhead under ~5 GB.
+
+[qwen_coder_3b_q6]
+name = "Qwen2.5-Coder-3B-Instruct"
+repo = "bartowski/Qwen2.5-Coder-3B-Instruct-GGUF"
+file = "Qwen2.5-Coder-3B-Instruct-Q6_K.gguf"
+quant = "Q6_K"
+size_gb = 2.54
+base_model = "Qwen/Qwen2.5-Coder-3B-Instruct"
+
+[qwen_coder_7b_iq4]
+name = "Qwen2.5-Coder-7B-Instruct"
+repo = "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF"
+file = "Qwen2.5-Coder-7B-Instruct-IQ4_XS.gguf"
+quant = "IQ4_XS"
+size_gb = 4.22
+base_model = "Qwen/Qwen2.5-Coder-7B-Instruct"
+# Q4_K_M (4.68 GB) is slightly better but only fits a 6 GB card with a small
+# context and nothing else on the GPU; IQ4_XS is the safe default.
+
+[qwen3_4b_q6]
+name = "Qwen3-4B-Instruct-2507"
+repo = "bartowski/Qwen_Qwen3-4B-Instruct-2507-GGUF"
+file = "Qwen_Qwen3-4B-Instruct-2507-Q6_K.gguf"
+quant = "Q6_K"
+size_gb = 3.31
+base_model = "Qwen/Qwen3-4B-Instruct-2507"
+
+[phi4_mini_q6]
+name = "Phi-4-mini-instruct"
+repo = "bartowski/microsoft_Phi-4-mini-instruct-GGUF"
+file = "microsoft_Phi-4-mini-instruct-Q6_K.gguf"
+quant = "Q6_K"
+size_gb = 3.16
+base_model = "microsoft/Phi-4-mini-instruct"
+
+# Optional, not used by any combo by default: MoE with ~3B active params.
+# Needs ~20 GB of free system RAM with the experts kept on the CPU
+# (llama.cpp --n-cpu-moe); only the attention layers go to the GPU.
+[qwen3_coder_30b_a3b_iq4]
+name = "Qwen3-Coder-30B-A3B-Instruct"
+repo = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+file = "Qwen3-Coder-30B-A3B-Instruct-IQ4_XS.gguf"
+quant = "IQ4_XS"
+size_gb = 16.38
+base_model = "Qwen/Qwen3-Coder-30B-A3B-Instruct"

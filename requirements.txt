@@ -1,8 +1,13 @@
 # Core runtime dependencies for src/
 python-dotenv>=1.0.0
+pyyaml>=6.0         # reading/writing generated Semgrep rules
 
-# llama-cpp-python is installed separately (see README) because the GPU build
-# requires a CUDA-enabled wheel/compile step that plain pip cannot express here.
+# Tests
+pytest>=8.0
+
+# llama-cpp-python is installed separately by scripts/setup_windows.ps1 or
+# scripts/setup_linux.sh, because the GPU build requires a CUDA compile step
+# that plain pip cannot express here.
 
 # semgrep is installed separately via pipx (CLI tool, not imported as a library):
 #   pipx install semgrep>=1.174.0

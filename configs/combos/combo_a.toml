@@ -1,0 +1,41 @@
+# Combo A - baseline "one model everywhere".
+# A single small model plays every role, so the model is never swapped. This
+# is the control group: every other combo has to beat it to justify using
+# different models per role.
+
+name = "A"
+description = "Qwen2.5-Coder-3B (Q6_K) in every role"
+target_gpu = "GTX 1060 6GB"
+
+[defaults]
+n_gpu_layers = -1   # -1 = all layers on the GPU; lower it if loading runs out of VRAM
+temperature = 0.0
+
+[loop]
+max_fix_attempts = 3   # Generator -> gate -> Corrector iterations before a rule is discarded
+
+[roles.detector]
+model = "qwen_coder_3b_q6"
+n_ctx = 16384
+max_tokens = 4096
+
+[roles.generator]
+model = "qwen_coder_3b_q6"
+n_ctx = 8192
+max_tokens = 2048
+
+[roles.corrector]
+model = "qwen_coder_3b_q6"
+n_ctx = 8192
+max_tokens = 2048
+temperature = 0.2   # a little randomness so a retry doesn't repeat the same broken rule
+
+[roles.critic]
+model = "qwen_coder_3b_q6"
+n_ctx = 8192
+max_tokens = 1024
+
+[roles.merger]
+model = "qwen_coder_3b_q6"
+n_ctx = 8192
+max_tokens = 2048

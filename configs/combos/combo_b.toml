@@ -1,0 +1,42 @@
+# Combo B - "3B detects, 7B writes" (main bet).
+# The detector runs thousands of times, so it stays small and fast. The VRAM
+# budget goes to the hardest role - writing Semgrep YAML - which runs far
+# less often. The critic comes from a different family (Phi) to avoid a model
+# approving rules written in its own style.
+
+name = "B"
+description = "Qwen2.5-Coder-3B detects, Qwen2.5-Coder-7B generates/corrects/merges, Phi-4-mini criticizes"
+target_gpu = "GTX 1060 6GB"
+
+[defaults]
+n_gpu_layers = -1
+temperature = 0.0
+
+[loop]
+max_fix_attempts = 3
+
+[roles.detector]
+model = "qwen_coder_3b_q6"
+n_ctx = 16384
+max_tokens = 4096
+
+[roles.generator]
+model = "qwen_coder_7b_iq4"
+n_ctx = 8192   # the 7B leaves little VRAM for the KV cache; don't raise this on 6 GB
+max_tokens = 2048
+
+[roles.corrector]
+model = "qwen_coder_7b_iq4"
+n_ctx = 8192
+max_tokens = 2048
+temperature = 0.2
+
+[roles.critic]
+model = "phi4_mini_q6"
+n_ctx = 8192
+max_tokens = 1024
+
+[roles.merger]
+model = "qwen_coder_7b_iq4"
+n_ctx = 8192
+max_tokens = 2048

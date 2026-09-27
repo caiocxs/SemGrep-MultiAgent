@@ -1,0 +1,4 @@
+# Keep shell scripts with LF even when checked out on Windows (they break with CRLF);
+# PowerShell scripts use CRLF, the Windows default.
+*.sh  text eol=lf
+*.ps1 text eol=crlf

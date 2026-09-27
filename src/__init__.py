@@ -5,11 +5,18 @@ from pathlib import Path
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from src.agents import agents_general, code_agent
-else:
-    from .agents import agents_general, code_agent
 
-__all__ = ["agents_general", "code_agent", "main", "run_all"]
+__all__ = ["main", "run_all"]
+
+
+def _agents():
+    """
+    Imports the agents (and therefore llama_cpp) only when a run actually
+    needs them, so light submodules like `python -m src.config` work on a
+    fresh setup before llama-cpp-python is built.
+    """
+    from src.agents import agents_general, code_agent
+    return agents_general, code_agent
 
 MODELS = ["QWEN_CODE", "STARCODER2", "DEEP_SEEK_CODER"]
 DATASETS = ["CWES_GOOD", "CWES_BAD"]
@@ -21,6 +28,7 @@ def _pending_count(dataset, logs_dir, limit=None):
     Lists the dataset files (no model load required) and returns
     (total_files, pending_files) by checking which logs already exist.
     """
+    agents_general, _ = _agents()
     agents_general.load_dataset(dataset)
     files = agents_general.files or []
     if limit:
@@ -42,6 +50,7 @@ def run_all(models=None, datasets=None, logs_root=None, skip_existing=True, limi
     are skipped without loading their model, and partially-done combinations
     resume from the first file that has no log yet.
     """
+    _, code_agent = _agents()
     models = models or MODELS
     datasets = datasets or DATASETS
     if not logs_root:

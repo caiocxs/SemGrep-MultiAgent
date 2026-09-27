@@ -1,0 +1,41 @@
+# Combo C - "newer generation, everything ~4B".
+# Same shape as Combo B, but the generator is a newer 4B model at a higher
+# quantization (Q6_K) instead of an older 7B squeezed into IQ4_XS. Answers:
+# does model generation + precision beat raw parameter count?
+
+name = "C"
+description = "Qwen2.5-Coder-3B detects, Qwen3-4B-Instruct-2507 generates/corrects/merges, Phi-4-mini criticizes"
+target_gpu = "GTX 1060 6GB"
+
+[defaults]
+n_gpu_layers = -1
+temperature = 0.0
+
+[loop]
+max_fix_attempts = 3
+
+[roles.detector]
+model = "qwen_coder_3b_q6"
+n_ctx = 16384
+max_tokens = 4096
+
+[roles.generator]
+model = "qwen3_4b_q6"
+n_ctx = 8192
+max_tokens = 2048
+
+[roles.corrector]
+model = "qwen3_4b_q6"
+n_ctx = 8192
+max_tokens = 2048
+temperature = 0.2
+
+[roles.critic]
+model = "phi4_mini_q6"
+n_ctx = 8192
+max_tokens = 1024
+
+[roles.merger]
+model = "qwen3_4b_q6"
+n_ctx = 8192
+max_tokens = 2048
