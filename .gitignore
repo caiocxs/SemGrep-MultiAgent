@@ -227,3 +227,6 @@ logs/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Generated rule candidates (every attempt of every run; accepted rules stay tracked)
+rules/candidates/

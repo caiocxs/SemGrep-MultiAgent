@@ -1,0 +1,10 @@
+# Internal rule used by the gate (src/pipeline/gate.py) to map every match to
+# its enclosing C function: each result is one function definition, with its
+# name in the message and its body span in start/end lines.
+rules:
+  - id: gate-internal-function-def
+    languages: [c]
+    severity: INFO
+    message: $F
+    pattern: |
+      $T $F(...) { ... }
