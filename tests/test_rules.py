@@ -132,3 +132,20 @@ def test_c_statements_need_semicolons_in_multiline_patterns():
         "rules:\n  - id: x\n    patterns:\n      - pattern: free($P)\n      - pattern-inside: |\n"
         "          if ($C) {\n            ...\n          }\n          free($P);\n", "g", "CWE-416")
     assert check_c_statements(ok) == []
+
+
+def test_structure_rejects_operator_names_outside_the_schema():
+    # Invented by Qwen2.5-Coder-3B in a real run; Semgrep accepted it silently.
+    problems = _structure_problems(
+        "rules:\n  - id: x\n    patterns:\n      - pattern: a($X)\n      - metavariable-patterns:\n"
+        "          metavariable: $X\n")
+    assert any("`metavariable-patterns` is not a Semgrep operator" in p for p in problems)
+    # `metadata` is free-form and must not be checked.
+    assert _structure_problems(
+        "rules:\n  - id: x\n    pattern: a($X)\n    metadata:\n      pattern-note: ok\n") == []
+
+
+def test_yaml_alias_error_gets_a_quoting_hint():
+    # Qwen3-4B wrote `- pattern: *$P` in most attempts of its real runs.
+    _, problems = normalize("rules:\n  - id: x\n    patterns:\n      - pattern: *$P\n", "g", "CWE-416")
+    assert len(problems) == 1 and "must be quoted" in problems[0]

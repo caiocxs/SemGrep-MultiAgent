@@ -107,3 +107,15 @@ def test_invalid_rule_is_rejected(tmp_path, body, expected):
     assert not report.passed()
     assert any(expected in e for e in report.errors)
     assert report.feedback().startswith("The rule is INVALID")
+
+
+def test_feedback_groups_repeated_false_positives():
+    from src.pipeline.gate import GateReport, Match
+    report = GateReport(
+        rule_path="r.yaml",
+        false_positives=[Match(f"f{i}.c", i, "r", "good", "free(data);") for i in range(10)]
+        + [Match("g.c", 1, "r", "goodB2G", "free(x);")],
+    )
+    text = report.feedback(max_items=5)
+    assert "(and 9 more like it)" in text
+    assert text.count("free(data);") == 1 and "free(x);" in text
