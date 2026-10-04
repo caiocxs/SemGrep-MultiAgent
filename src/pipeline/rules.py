@@ -63,7 +63,12 @@ def normalize(yaml_text, rule_id, cwe):
     try:
         data = yaml.safe_load(yaml_text)
     except yaml.YAMLError as e:
-        return None, [f"YAML syntax error: {' '.join(str(e).split())}"]
+        msg = f"YAML syntax error: {' '.join(str(e).split())}"
+        if "alias" in msg or "mapping values are not allowed" in msg:
+            msg += (" Hint: a YAML value that starts with `*`, `&`, `!`, `%`, `@` or contains `: ` must be "
+                    "quoted or written as a `|` block, e.g. `pattern: \"*$P\"`, and `message:` text with "
+                    "a colon must be quoted too.")
+        return None, [msg]
 
     if isinstance(data, dict) and "rules" in data:
         rules = data["rules"]
@@ -107,6 +112,16 @@ TAINT_KEYS = ("pattern-sources", "pattern-propagators", "pattern-sanitizers", "p
 MAPPING_ALLOWED = {"pattern-not", "pattern-inside", "pattern-not-inside"}
 
 
+# Operator names Semgrep OSS accepts. Semgrep silently ignores unknown keys in some
+# places (e.g. `metavariable-patterns`), so operator-like keys are checked against this.
+KNOWN_OPERATORS = PATTERN_KEYS | {
+    "patterns", "pattern-either", "pattern-sources", "pattern-sinks", "pattern-sanitizers",
+    "pattern-propagators", "metavariable", "metavariable-pattern", "metavariable-regex",
+    "metavariable-comparison", "metavariable-analysis", "focus-metavariable",
+}
+_OPERATOR_PREFIXES = ("pattern", "metavariable", "focus")
+
+
 def _names(keys):
     return ", ".join(f"`{k}`" for k in keys)
 
@@ -118,6 +133,13 @@ def _check_node(node):
             problems += _check_node(item)
     elif isinstance(node, dict):
         for key, value in node.items():
+            if key == "metadata":
+                continue
+            if isinstance(key, str) and key.startswith(_OPERATOR_PREFIXES) and key not in KNOWN_OPERATORS:
+                problems.append(
+                    f"`{key}` is not a Semgrep operator (Semgrep may ignore it silently). "
+                    f"Valid operators: {_names(sorted(KNOWN_OPERATORS - {'metavariable'}))}."
+                )
             if key in PATTERN_KEYS:
                 if isinstance(value, list):
                     problems.append(

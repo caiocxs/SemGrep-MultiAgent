@@ -44,14 +44,17 @@ class LocalLLM:
             self._loaded = None
             gc.collect()
 
-    def complete(self, role, prompt):
-        """Returns (response_text, seconds) for a single-turn prompt with the role's settings."""
+    def complete(self, role, prompt, temperature=None):
+        """
+        Returns (response_text, seconds) for a single-turn prompt with the role's settings;
+        `temperature` overrides the combo's value for this call.
+        """
         settings = self.combo["roles"][role]
         self._load(settings)
         start = time.time()
         response = self._llm.create_chat_completion(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=settings["max_tokens"],
-            temperature=settings.get("temperature", 0.0),
+            temperature=settings.get("temperature", 0.0) if temperature is None else temperature,
         )
         return response["choices"][0]["message"]["content"], time.time() - start

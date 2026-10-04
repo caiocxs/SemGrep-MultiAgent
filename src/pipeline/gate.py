@@ -131,10 +131,17 @@ class GateReport:
             _more(lines, self.missed_cases, max_items)
         if self.false_positives:
             lines.append("False positives on safe code (the rule must NOT match these):")
-            for m in self.false_positives[:max_items]:
+            # Group by matched code: 100 matches of the same statement are one lesson.
+            groups = {}
+            for m in self.false_positives:
+                groups.setdefault(m.code, []).append(m)
+            ranked = sorted(groups.items(), key=lambda kv: -len(kv[1]))
+            for code, ms in ranked[:max_items]:
+                m = ms[0]
                 where = f" in {m.function}()" if m.function else ""
-                lines.append(f"- {Path(m.path).name}:{m.line}{where}: `{m.code}`")
-            _more(lines, self.false_positives, max_items)
+                times = f" (and {len(ms) - 1} more like it)" if len(ms) > 1 else ""
+                lines.append(f"- {Path(m.path).name}:{m.line}{where}: `{code}`{times}")
+            _more(lines, ranked, max_items)
         if self.passed():
             lines.append("No false positives.")
         return "\n".join(lines)

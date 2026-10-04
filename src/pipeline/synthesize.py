@@ -27,6 +27,8 @@ from src.config import load_combo
 from src.pipeline.findings import load_findings, number_lines, render_example, select_examples
 from src.pipeline.gate import collect_files, evaluate
 from src.pipeline.rules import dump_rule, forbidden_identifiers, parse_response, write_rule
+from src.pipeline.spec import parse_response as parse_spec_response
+from src.pipeline.spec import parse_template_response
 from src.pipeline.split import flow_variant, split_files
 
 PROMPTS_DIR = Path("prompts")
@@ -54,6 +56,13 @@ CWES = {
 def load_docs():
     text = (PROMPTS_DIR / "semgrep_docs.md").read_text(encoding="utf-8")
     return re.sub(r"<!--.*?-->\s*", "", text, flags=re.S).strip()  # drop the sources header
+
+
+def load_pattern_docs():
+    """Only the pattern-syntax section of the docs: the spec format has no YAML for the model to write."""
+    text = load_docs()
+    start, end = text.index("## Pattern syntax"), text.index("## Taint mode")
+    return text[start:end].strip()
 
 
 def render(template, **values):
@@ -85,12 +94,32 @@ def _score(attempt):
 
 def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, n_examples=3,
                min_recall=0.5, test_ratio=0.3, seed=0, rules_dir=Path("rules"),
-               logs_dir=Path("logs/synthesis"), max_fix_attempts=None):
+               logs_dir=Path("logs/synthesis"), max_fix_attempts=None, output_format="yaml",
+               samples=1, temperature=None, stop_on_pass=False):
     """
     Runs the loop for one CWE and returns the run log (also written to disk).
     `complete(role, prompt) -> (text, seconds)` defaults to the combo's local
-    models; tests pass a fake one.
+    models; tests pass a fake one. `output_format` is "yaml" (the model writes
+    the rule), "spec" (the model writes a JSON of patterns) or "template" (the
+    model fills in a predefined state-change strategy), see spec.py.
+
+    `samples` > 1 runs that many independent generator -> corrector loops
+    (best-of-N): the models sample with `temperature` (default 0.7 when
+    sampling; `complete` is then called with a `temperature` keyword) and the
+    gate, on the train files only, picks the best attempt among all of them.
+    `stop_on_pass` ends the sampling at the first sample that passes.
     """
+    if samples < 1:
+        raise ValueError("samples must be at least 1")
+    formats = {
+        "yaml": ("rule_generator", "rule_corrector", parse_response),
+        "spec": ("spec_generator", "spec_corrector", parse_spec_response),
+        "template": ("template_generator", "template_corrector", parse_template_response),
+    }
+    if output_format not in formats:
+        raise ValueError(f"Unknown output format: {output_format}")
+    spec_mode = output_format != "yaml"  # the model answers in JSON, not YAML
+    generator_template, corrector_template, parse = formats[output_format]
     combo = load_combo(combo_name)
     if max_fix_attempts is None:
         max_fix_attempts = combo["loop"].get("max_fix_attempts", 3)
@@ -112,7 +141,8 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         raise RuntimeError(f"No {cwe} findings in {', '.join(map(str, log_dirs))} for the train files.")
 
     cwe_name, cwe_description = CWES[cwe]
-    common = dict(CWE_ID=cwe, CWE_NAME=cwe_name, CWE_DESCRIPTION=cwe_description, SEMGREP_DOCS=load_docs())
+    common = dict(CWE_ID=cwe, CWE_NAME=cwe_name, CWE_DESCRIPTION=cwe_description)
+    common["PATTERN_DOCS" if spec_mode else "SEMGREP_DOCS"] = load_pattern_docs() if spec_mode else load_docs()
     forbidden = forbidden_identifiers(examples)
     rule_id = f"gen-{cwe.lower()}"
 
@@ -124,47 +154,70 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         f"{len(findings)} findings, {len(examples)} examples\n"
     )
 
-    prompt = render("rule_generator", **common, EXAMPLES="\n\n".join(
+    first_prompt = render(generator_template, **common, EXAMPLES="\n\n".join(
         render_example(f, i) for i, f in enumerate(examples, start=1)))
-    role = "generator"
-    attempts = []
-    seen = {}  # rule text -> (attempt number, its feedback)
-    for n in range(max_fix_attempts + 1):
-        print(f"[{n}] {role}: prompting ({len(prompt)} chars)...")
-        text, seconds = complete(role, prompt)
-        yaml_text, rule_doc, problems = parse_response(text, rule_id, cwe, forbidden)
+    if samples > 1 and temperature is None:
+        temperature = 0.7  # identical samples would be pointless
+    call = complete if temperature is None else (lambda r, pr: complete(r, pr, temperature=temperature))
 
-        rule_path = write_rule(rule_doc, candidates_dir / f"attempt_{n}.yaml") if rule_doc else None
-        rule_text = dump_rule(rule_doc) if rule_doc else None
-        report = None
-        if rule_text in seen:
-            # Same rule as a failed attempt: re-testing it is pointless, and small
-            # models otherwise keep resubmitting it with a new explanation.
-            k, previous_feedback = seen[rule_text]
-            problems = [f"This is exactly the same rule as attempt {k}, which already failed. "
-                        "Change the rule itself to fix the problems below."]
-            feedback = f"{problems[0]}\n\n{previous_feedback}"
-        elif problems:
-            feedback = "The rule was rejected before testing:\n" + "\n".join(f"- {p}" for p in problems)
-        else:
-            report = evaluate(rule_path, train_bad, train_good)
-            feedback = report.feedback()
-        if rule_text and rule_text not in seen:
-            seen[rule_text] = (n, feedback)
+    def run_sample(k):
+        """One independent generator -> gate -> corrector loop; returns its attempts."""
+        prompt, role = first_prompt, "generator"
+        attempts = []
+        seen = {}  # rule text -> (attempt number, its feedback)
+        for n in range(max_fix_attempts + 1):
+            print(f"[{n}] {role}: prompting ({len(prompt)} chars)...")
+            text, seconds = call(role, prompt)
+            yaml_text, rule_doc, problems = parse(text, rule_id, cwe, forbidden)
 
-        attempts.append({"n": n, "role": role, "seconds": round(seconds, 2), "prompt_chars": len(prompt),
-                         "response": text, "rule_path": str(rule_path) if rule_path else None,
-                         "problems": problems, "report": report})
-        status = "PASSED" if report and report.passed(min_recall) else "failed"
-        summary = f"recall={report.recall:.0%} fp={len(report.false_positives)}" if report and report.valid else \
-            (report.errors[0][:120] if report else problems[0][:120])
-        print(f"[{n}] {status} in {seconds:.0f}s: {summary}")
-        if report and report.passed(min_recall):
+            file_name = f"attempt_{n}.yaml" if samples == 1 else f"sample{k}_attempt_{n}.yaml"
+            rule_path = write_rule(rule_doc, candidates_dir / file_name) if rule_doc else None
+            rule_text = dump_rule(rule_doc) if rule_doc else None
+            report = None
+            if rule_text in seen:
+                # Same rule as a failed attempt: re-testing it is pointless, and small
+                # models otherwise keep resubmitting it with a new explanation.
+                previous_n, previous_feedback = seen[rule_text]
+                problems = [f"This is exactly the same rule as attempt {previous_n}, which already failed. "
+                            "Change the rule itself to fix the problems below."]
+                feedback = f"{problems[0]}\n\n{previous_feedback}"
+            elif problems:
+                feedback = "The rule was rejected before testing:\n" + "\n".join(f"- {p}" for p in problems)
+            else:
+                report = evaluate(rule_path, train_bad, train_good)
+                feedback = report.feedback()
+            if rule_text and rule_text not in seen:
+                seen[rule_text] = (n, feedback)
+
+            attempts.append({"sample": k, "n": n, "role": role, "seconds": round(seconds, 2), "prompt_chars": len(prompt),
+                             "response": text, "rule_path": str(rule_path) if rule_path else None,
+                             "problems": problems, "report": report})
+            status = "PASSED" if report and report.passed(min_recall) else "failed"
+            summary = f"recall={report.recall:.0%} fp={len(report.false_positives)}" if report and report.valid else \
+                (report.errors[0][:120] if report else problems[0][:120])
+            print(f"[{n}] {status} in {seconds:.0f}s: {summary}")
+            if report and report.passed(min_recall):
+                break
+
+            current = yaml_text if spec_mode else (dump_rule(rule_doc) if rule_doc else yaml_text)
+            prompt = render(corrector_template, **common, FEEDBACK=feedback, MISSED_CODE=missed_code(report),
+                            RULE=(current or text).strip())
+            role = "corrector"
+
+        return attempts
+
+    attempts, sample_summary = [], []
+    for k in range(samples):
+        if samples > 1:
+            print(f"--- sample {k + 1}/{samples} (temperature {temperature}) ---")
+        sample_attempts = run_sample(k)
+        attempts += sample_attempts
+        best_of_sample = max(sample_attempts, key=_score)
+        passed = bool(best_of_sample["report"] and best_of_sample["report"].passed(min_recall))
+        sample_summary.append({"sample": k, "attempts": len(sample_attempts), "passed": passed,
+                               "best_attempt": best_of_sample["n"]})
+        if passed and stop_on_pass:
             break
-
-        prompt = render("rule_corrector", **common, FEEDBACK=feedback, MISSED_CODE=missed_code(report),
-                        RULE=dump_rule(rule_doc).strip() if rule_doc else (yaml_text or text).strip())
-        role = "corrector"
 
     best = max(attempts, key=_score)
     best_report = best["report"]
@@ -179,13 +232,15 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
             shutil.copyfile(best["rule_path"], accepted_path)
 
     run = {
-        "run_id": run_id, "cwe": cwe, "combo": combo["name"], "seed": seed, "min_recall": min_recall,
+        "run_id": run_id, "cwe": cwe, "combo": combo["name"], "seed": seed, "format": output_format, "min_recall": min_recall,
         "models": {r: combo["roles"][r]["model"]["name"] for r in ("generator", "corrector")},
         "split": {"test_variants": test_variants, "train_bad": len(train_bad), "train_good": len(train_good),
                   "test_bad": len(test_bad), "test_good": len(test_good)},
         "findings": len(findings), "examples": [str(f.file) for f in examples],
         "attempts": [{**a, "report": a["report"].to_dict() if a["report"] else None} for a in attempts],
-        "best_attempt": best["n"], "accepted": accepted,
+        "samples": samples, "temperature": temperature, "sample_summary": sample_summary,
+        "samples_passed": sum(s["passed"] for s in sample_summary),
+        "best_sample": best["sample"], "best_attempt": best["n"], "accepted": accepted,
         "accepted_path": str(accepted_path) if accepted_path else None,
         "test_report": test_report.to_dict() if test_report else None,
     }
@@ -193,7 +248,10 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.write_text(json.dumps(run, indent=4, ensure_ascii=False), encoding="utf-8")
 
-    print(f"\nBest attempt: {best['n']} | accepted: {accepted}" + (f" -> {accepted_path}" if accepted_path else ""))
+    if samples > 1:
+        print(f"\nSamples passing the gate: {run['samples_passed']}/{len(sample_summary)}")
+    where = f"sample {best['sample']}, attempt {best['n']}" if samples > 1 else f"attempt {best['n']}"
+    print(f"\nBest: {where} | accepted: {accepted}" + (f" -> {accepted_path}" if accepted_path else ""))
     if test_report:
         print(f"Held-out test: recall={test_report.recall:.1%} precision={test_report.precision:.1%} "
               f"fp={len(test_report.false_positives)}")
@@ -203,7 +261,7 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
 
 def main():
     parser = argparse.ArgumentParser(description="Generate a Semgrep rule for one CWE with the generator/corrector loop.")
-    parser.add_argument("--combo", required=True, help="Model combo (A, B, C)")
+    parser.add_argument("--combo", required=True, help="Model combo (A, B, C, D)")
     parser.add_argument("--cwe", required=True, choices=sorted(CWES), help="Target CWE")
     parser.add_argument("--bad", nargs="+", default=["datasets/cwes_mixed/bad"], help="Vulnerable files/directories")
     parser.add_argument("--good", nargs="+", default=["datasets/cwes_mixed/good"], help="Safe files/directories")
@@ -214,13 +272,22 @@ def main():
     parser.add_argument("--min-recall", type=float, default=0.5, help="Train recall a rule needs to be accepted")
     parser.add_argument("--max-fix-attempts", type=int, default=None, help="Override the combo's corrector limit")
     parser.add_argument("--seed", type=int, default=0, help="Seed for the train/test split and example choice")
+    parser.add_argument("--format", choices=("yaml", "spec", "template"), default="yaml",
+                        help="yaml: the model writes the rule; spec: the model writes a JSON of patterns; "
+                             "template: the model fills in a predefined strategy (patterns only)")
+    parser.add_argument("--samples", type=int, default=1,
+                        help="Independent generator/corrector loops (best-of-N); the gate picks the best on train")
+    parser.add_argument("--temperature", type=float, default=None,
+                        help="Sampling temperature for generator and corrector (default: the combo's; 0.7 if --samples > 1)")
+    parser.add_argument("--stop-on-pass", action="store_true", help="Stop sampling at the first sample that passes")
     args = parser.parse_args()
 
     synthesize(
         cwe=args.cwe, combo_name=args.combo,
         bad_files=collect_files(args.bad), good_files=collect_files(args.good), log_dirs=args.logs,
         n_examples=args.examples, min_recall=args.min_recall, seed=args.seed,
-        max_fix_attempts=args.max_fix_attempts,
+        max_fix_attempts=args.max_fix_attempts, output_format=args.format,
+        samples=args.samples, temperature=args.temperature, stop_on_pass=args.stop_on_pass,
     )
 
 
