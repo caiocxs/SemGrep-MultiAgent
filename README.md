@@ -87,6 +87,10 @@ Notes:
   after a GPU build.
 - If PowerShell blocks the script, run once:
   `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+- With `-Gpu`, run the script from a Visual Studio developer environment (e.g. after
+  `vcvars64.bat`), otherwise Ninja can't find `cl.exe`.
+- On the default Windows console, set `PYTHONUTF8=1` before `--download`; otherwise the
+  final "✓" message raises `UnicodeEncodeError` (the file is already saved by then).
 
 ## Models
 
@@ -254,6 +258,24 @@ Outputs: every attempt in `rules/candidates/<combo>/<cwe>/<run>/`, the
 accepted rule in `rules/accepted/<combo>/<cwe>.yaml`, and the full run log
 (prompts sizes, raw responses, gate reports, timings, test result) in
 `logs/synthesis/<combo>/<cwe>/<run>.json`.
+
+`--format spec` changes what the model writes: instead of the rule's YAML it writes a
+JSON of patterns (`src/pipeline/spec.py`) and the program builds the rule, so the model
+never handles YAML quoting or operator nesting. Default is `--format yaml`.
+
+`--format template` is an experimental arm where a strategy written by us (a state change
+of a variable, run as Semgrep taint mode) is predefined and the model only fills in the
+patterns (`event`, `uses`, `resets`); see [docs/changes.md](docs/changes.md) phase 8.
+
+`--samples N [--temperature T] [--stop-on-pass]` runs N independent generator/corrector
+loops (best-of-N); the gate picks the best attempt on the train files and only that one is
+evaluated on the held-out test files. The fraction of samples that pass is a measure of
+how often a model can write a valid rule.
+
+The ablation table (what each change did, per factor) is in [docs/ablation.md](docs/ablation.md).
+
+Results of the runs so far are in [docs/experiments.md](docs/experiments.md); the errors
+found and every change made in response are in [docs/changes.md](docs/changes.md).
 
 ## Multi-Agent Architecture & Pipeline
 
