@@ -1,0 +1,46 @@
+# Combo D - "big MoE writes, partly offloaded".
+# Same shape as Combos B/C, but the generator is Qwen3-Coder-30B-A3B (only ~3B
+# parameters active per token). It does not fit 6 GB of VRAM, so only some layers
+# go to the GPU and the rest run from system RAM (needs ~20 GB free RAM). Slower
+# per token than B/C, but answers: does a much stronger code model write valid,
+# well-reasoned Semgrep rules where the 3-7B models do not?
+
+name = "D"
+description = "Qwen2.5-Coder-3B detects, Qwen3-Coder-30B-A3B (partial GPU offload) generates/corrects/merges, Phi-4-mini criticizes"
+target_gpu = "GTX 1060 6GB + 20 GB RAM"
+
+[defaults]
+n_gpu_layers = -1
+temperature = 0.0
+
+[loop]
+max_fix_attempts = 3
+
+[roles.detector]
+model = "qwen_coder_3b_q6"
+n_ctx = 16384
+max_tokens = 4096
+
+[roles.generator]
+model = "qwen3_coder_30b_a3b_iq4"
+n_ctx = 8192
+n_gpu_layers = 10   # of 48; raise until VRAM (~5 GB usable) is nearly full
+max_tokens = 2048
+
+[roles.corrector]
+model = "qwen3_coder_30b_a3b_iq4"
+n_ctx = 8192
+n_gpu_layers = 10
+max_tokens = 2048
+temperature = 0.2
+
+[roles.critic]
+model = "phi4_mini_q6"
+n_ctx = 8192
+max_tokens = 1024
+
+[roles.merger]
+model = "qwen3_coder_30b_a3b_iq4"
+n_ctx = 8192
+n_gpu_layers = 10
+max_tokens = 2048
