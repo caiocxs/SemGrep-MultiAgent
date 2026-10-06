@@ -175,3 +175,54 @@ def test_duplicate_json_keys_are_reported_instead_of_overwritten():
     problems = parse(text)[2]
     assert len(problems) == 1 and "duplicate keys: `search`" in problems[0]
     assert "JSON syntax error" in parse('```json\n{"a": }\n```')[2][0]
+
+
+def build(template):
+    from src.pipeline.spec import parse_template_response
+    _, rule_doc, problems = parse_template_response(f"```json\n{json.dumps(template)}\n```", "gen-x", "CWE-416", set())
+    return rule_doc, problems
+
+
+def test_not_inside_becomes_pattern_not_inside_after_the_exclusions():
+    rule_doc, problems = build({
+        "message": "m", "event": {"pattern": "mark($X)", "variable": "$X"},
+        "uses": [{"pattern": "$Y->...", "focus": "$Y", "not": ["safe($Y)"], "not_inside": ["mark(...)", "outer(...)"]},
+                 {"pattern": "g($Y)", "not_inside": ["mark(...)"]}],
+    })
+
+    assert problems == []
+    first, second = rule_doc["rules"][0]["pattern-sinks"]
+    assert first["patterns"] == [{"pattern": "$Y->..."}, {"pattern-not": "safe($Y)"},
+                                 {"pattern-not-inside": "mark(...)"}, {"pattern-not-inside": "outer(...)"},
+                                 {"focus-metavariable": "$Y"}]
+    assert second == {"patterns": [{"pattern": "g($Y)"}, {"pattern-not-inside": "mark(...)"}]}
+    assert yaml.safe_load(dump_rule(rule_doc)) == rule_doc
+
+
+def test_not_inside_problems_are_explained_and_the_unknown_key_message_lists_it():
+    _, problems = build({"event": {"pattern": "m($X)", "variable": "$X"},
+                         "uses": [{"pattern": "u($X)", "not_inside": []}]})
+    assert any("uses[0].not_inside" not in p and "taint.sinks[0].not_inside must be a non-empty list" in p for p in problems)
+
+    _, problems = build({"event": {"pattern": "m($X)", "variable": "$X"}, "uses": [{"pattern": "u($X)", "nope": 1}]})
+    assert any("allowed: `pattern`, `focus`, `by_side_effect`, `not`, `not_inside`" in p for p in problems)
+
+
+@pytest.mark.skipif(shutil.which("semgrep") is None, reason="semgrep not installed")
+def test_not_inside_excludes_the_use_inside_the_marking_call_where_not_cannot(tmp_path):
+    from src.pipeline.gate import evaluate
+    from src.pipeline.rules import write_rule
+    code = tmp_path / "real" / "code.c"
+    code.parent.mkdir()
+    code.write_text("void f(struct s *p)\n{\n\tmark(p);\n\tmark(p->a);\n\tuse(p->b);\n}\n", encoding="utf-8")
+
+    def alert_lines(exclusion):
+        rule_doc, problems = build({"message": "m", "event": {"pattern": "mark($X)", "variable": "$X"},
+                                    "uses": [{"pattern": "$Y->...", "focus": "$Y", **exclusion}]})
+        assert problems == []
+        report = evaluate(write_rule(rule_doc, tmp_path / "rule.yaml"), [], [], negative_files=[code])
+        return [m.line for m in report.negative_matches]
+
+    # the use `p->a` is the argument of the second mark(): the match is `p->a`, not `mark(p->a)`
+    assert alert_lines({"not": ["mark(...)"]}) == [4, 5]       # `not` is only for matches equal to the pattern
+    assert alert_lines({"not_inside": ["mark(...)"]}) == [5]   # `not_inside` removes it, use(p->b) stays

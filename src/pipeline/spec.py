@@ -12,7 +12,7 @@ Spec format:
 
     {"message": "...",
      "taint": {"sources":    [{"pattern": "...", "focus": "$X", "by_side_effect": true}],
-               "sinks":      [{"pattern": "...", "focus": "$X", "not": ["..."]}],
+               "sinks":      [{"pattern": "...", "focus": "$X", "not": ["..."], "not_inside": ["..."]}],
                "sanitizers": [{"pattern": "...", "focus": "$X", "by_side_effect": true}]}}
 
 or, without data flow:
@@ -29,7 +29,7 @@ from src.pipeline.rules import check_c_statements, check_structure, dump_rule, l
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?[ \t]*\n(.*?)```", re.S)
 _TAINT_ROLES = {"sources": "pattern-sources", "sinks": "pattern-sinks", "sanitizers": "pattern-sanitizers"}
-_ENTRY_KEYS = {"pattern", "focus", "by_side_effect", "not"}
+_ENTRY_KEYS = {"pattern", "focus", "by_side_effect", "not", "not_inside"}
 _SEARCH_KEYS = {"pattern", "either", "inside", "not", "not_inside"}
 
 
@@ -59,14 +59,19 @@ def _pattern_list(value, where, problems):
 
 
 def _taint_entry(entry, where, problems, allow_side_effect):
-    """One source/sink/sanitizer. `not` excludes matches equal to those patterns."""
+    """
+    One source/sink/sanitizer. `not` excludes matches equal to those patterns (`pattern-not`);
+    `not_inside` excludes matches located anywhere inside code that matches one of them
+    (`pattern-not-inside`): a sink such as `$P->...` matches `x->f` inside `free(x->f)`, which a
+    `not` of `free($P)` does not exclude because the match is the argument, not the whole call.
+    """
     if not isinstance(entry, dict):
         problems.append(f'{where} must be an object like {{"pattern": "..."}}.')
         return None
     unknown = sorted(set(entry) - _ENTRY_KEYS)
     if unknown:
         problems.append(f"{where} has unknown keys {', '.join(f'`{k}`' for k in unknown)}; "
-                        "allowed: `pattern`, `focus`, `by_side_effect`, `not`.")
+                        "allowed: `pattern`, `focus`, `by_side_effect`, `not`, `not_inside`.")
     pattern = _pattern(entry.get("pattern"), f"{where}.pattern", problems)
     if pattern is None:
         return None
@@ -80,9 +85,11 @@ def _taint_entry(entry, where, problems, allow_side_effect):
     if side_effect and not focus:
         problems.append(f"{where}: `by_side_effect` needs `focus` (the metavariable that becomes tainted).")
     excluded = _pattern_list(entry["not"], f"{where}.not", problems) if "not" in entry else []
-    if not focus and not excluded:
+    excluded_inside = _pattern_list(entry["not_inside"], f"{where}.not_inside", problems) if "not_inside" in entry else []
+    if not focus and not excluded and not excluded_inside:
         return {"pattern": pattern}
     built = {"patterns": [{"pattern": pattern}] + [{"pattern-not": n} for n in excluded]
+             + [{"pattern-not-inside": n} for n in excluded_inside]
              + ([{"focus-metavariable": focus}] if focus else [])}
     if side_effect and allow_side_effect and focus:
         built["by-side-effect"] = True

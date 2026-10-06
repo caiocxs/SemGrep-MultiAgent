@@ -15,7 +15,7 @@ It was tested against vulnerable and safe C code and failed. Fix it. You do NOT 
 This rule follows one variable through the code of a function (Semgrep taint mode, by side effect):
 
 1. An **event** is a statement that puts a variable into a new state (its pattern binds the variable with a metavariable, e.g. `$X`). From that point on, that variable is "marked".
-2. A **use** is code that is a problem when it happens to a marked variable. The rule reports the use. A use is a pattern that mentions the variable through its own metavariable. Give one entry per kind of use; an entry can be a plain pattern string or an object `{"pattern": "...", "focus": "$Y", "not": ["..."]}` where `focus` picks the sub-expression to report and `not` lists patterns that must not count as a use.
+2. A **use** is code that is a problem when it happens to a marked variable. The rule reports the use. A use is a pattern that mentions the variable through its own metavariable. Give one entry per kind of use; an entry can be a plain pattern string or an object `{"pattern": "...", "focus": "$Y", "not": ["..."], "not_inside": ["..."]}` where `focus` picks the sub-expression to report, `not` lists patterns that must not count as a use (a match is excluded only when it is exactly one of those patterns) and `not_inside` lists patterns such that a use located anywhere inside code matching one of them does not count.
 3. A **reset** is a statement that puts the variable back into a clean state (an assignment, a check...). After it the variable is no longer marked. Resets are optional.
 
 You write only the patterns. The program builds the Semgrep rule from them.
@@ -26,7 +26,7 @@ You write only the patterns. The program builds the Semgrep rule from them.
 {
   "message": "one-line description shown to the user",
   "event": {"pattern": "change_state($X)", "variable": "$X"},
-  "uses": ["use_it($Y)", {"pattern": "other_use($Y, ...)", "focus": "$Y", "not": ["safe_call(...)"]}],
+  "uses": ["use_it($Y)", {"pattern": "other_use($Y, ...)", "focus": "$Y", "not": ["safe_call(...)"], "not_inside": ["wrapper(...)"]}],
   "resets": [{"pattern": "$X = $E", "variable": "$X"}]
 }
 ```
