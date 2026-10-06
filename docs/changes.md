@@ -198,3 +198,117 @@ the test split is evaluated only for the chosen rules. Writes a merged YAML (ids
 `-ens<k>` suffix; nothing else is touched). Kind: selection over rules the models wrote,
 no LLM. Report next to single-run results: it uses the compute of every earlier run.
 Tests: `tests/test_ensemble.py` (9).
+
+## Phase 10 - real-world negatives, counterexamples and attempt ranking (2026-10-04)
+
+Motivation: the accepted rule of phase 8 (`rules/accepted/D/cwe-416.yaml`) had 0 false
+positives on Juliet, but on the source of Git (`git/git` at commit `8103b44651`, 644 `.c`
+files, 447 KLOC, used as a real-world reference) it raised **927 alerts (2.1 per KLOC)**.
+A sample of 40 alerts (random, seed 7), read with 11-15 lines of context each, had **no real
+use after free**: 24 were sequences of `free` on sibling fields in release functions, 10 were
+loops over different elements or with an advancing index, 5 were a reassignment after the
+`free` by a function the rule does not know as a sanitizer (`xstrdup`, `xcalloc`, an output
+parameter), 1 was checked in the code of the callee and was also correct. With 0/40 the
+95% upper bound of the precision on this code is about 7.5%. Limits: the judgment was made
+by reading, not by running the code, and the sample is small.
+
+Everything below is part of the gate or the feedback: **deterministic aids**, no LLM, the
+rule stays the model's. Principle 7 (the system does not know which detector findings are
+right) is not touched.
+
+| # | Change | Where | Kind |
+|---|---|---|---|
+| 17 | Real-world negatives: `evaluate(..., negative_files, max_negative_rate)`. Every match in those files is an alert (kept apart from the Juliet false positives, so Juliet precision stays comparable with the baseline packs); the report has the alert count, the number of lines scanned and the rate per KLOC; a rule passes only if the rate on the train side is at most `max_negative_rate` (default 0.1 in `synthesize`, not enforced in the gate CLI unless given). The files are split by `split_negatives`: a hash of the path relative to the repository root and the seed, so the split is the same on any machine and a file never changes side when others are added; the test side is scanned once, for the final report | `gate.py`, `split.py`, `synthesize.py` | gate |
+| 18 | Counterexamples in the feedback: the first false positives (Juliet: 3 groups; real code: one example per file, files with most alerts first) come with 8 lines before and 2 after, the alert line marked `>`. The corrector used to receive a single line | `gate.py` | feedback |
+| 19 | `_score` ranks attempts as: valid, passed, detects at least one case, F1 (alerts on real code count as false positives), fewest alerts. It used to rank by fewest false positives first, so a valid rule that matches nothing beat every rule that detected something (the best-of-N runs of phase 7 reported such rules as "best"). This is the decision left open in phase 7. It changes which attempt is called "best" and evaluated on the test set, never acceptance | `synthesize.py` | selection |
+| 20 | Gate speed: Semgrep runs from the home directory with absolute paths (inside a git repository it asks git about each target, about 0.5 s per file on Windows: 446 files took 299 s, now 23 s), without the function-definition rule on real code (that rule is only used to grade Juliet matches by function name), and with `--timeout 30` | `gate.py` | infrastructure |
+
+Notes to declare:
+- The temp directory was *not* used as the working directory: an empty directory under
+  `AppData/Local/Temp` made the same scan ten times slower on this Windows machine (30 s
+  against 3 s). The reason was not investigated.
+- The alert count of the same rule on the same files varies by about 1-2% between runs
+  (train side, accepted CWE-416 rule: 618, 629, 623 alerts in 287.7 KLOC; test side 284, 285,
+  292 in 111.9 KLOC), also with `--timeout 30`. The acceptance threshold must not depend on
+  exact counts.
+- The negatives are *assumed* correct. A real bug in them counts as a false positive.
+  `max_negative_rate` is a parameter chosen by us, not derived from data.
+- Rates of the accepted CWE-416 rule on the Git split (seed 0, 30% test): train
+  2.15-2.19 alerts/KLOC, test 2.54-2.61 alerts/KLOC. That rule would not pass the gate at 0.1.
+- Runs made before this phase used the old `_score`; their "best attempt" is not recomputed.
+- Tests: `tests/test_split.py` (5), additions to `tests/test_gate.py` and
+  `tests/test_synthesize.py` (including the loop with real-world code). Suite: 66 passed.
+
+## Phase 11 - time limit per model call and k-fold cross-validation (2026-10-04)
+
+Both are infrastructure; neither writes or edits a rule.
+
+| # | Change | Where | Why |
+|---|---|---|---|
+| 21 | `LocalLLM.complete` streams the answer and cuts it after `max_seconds` (role setting, default 600 s), returning the partial text; the parser rejects it like any malformed answer and the loop goes on | `llm.py` | One combo C attempt took 2729 s (others 18-30 s, cause unknown) and the run hit the 50 minute limit of the background shell, losing the run log. A single forward pass that never produces tokens still cannot be interrupted |
+| 22 | `split.fold_split`, `synthesize --folds K --fold i`: the flow variants are shuffled (seed) and dealt into K groups, group i is the test side; GOOD files follow the variants as before | `split.py`, `synthesize.py` | A 30% random split tests 6 of 20 variants of CWE-416; the number depends on which 6. Over all folds every variant is tested exactly once |
+| 23 | `python -m src.pipeline.crossval`: runs `synthesize` once per fold sharing one model load, and summarizes the held-out numbers per fold and as mean and standard deviation. Recall counts a fold with no valid rule as 0; precision is averaged only over folds whose rule matched something. Rules go to `rules/crossval/<run>/fold<i>/` and the summary to `logs/crossval/<combo>/<cwe>/<run>.json` | `crossval.py` | Replaces single-split numbers by a mean with a spread. It never writes `rules/accepted/` |
+| 24 | `synthesize --rules-dir` (default `rules`) | `synthesize.py` | Experiments that must not overwrite the versioned `rules/accepted/` (it holds the first accepted rule of the project) |
+
+Notes to declare:
+- The real-world files are split once (seed 0, 30% test) and are the same in every fold; only
+  the Juliet variants change between folds. The examples shown to the generator change with
+  the fold because the train side changes.
+- Each fold is a separate generator -> gate -> corrector run with its own acceptance, so
+  "accepted in k of K folds" is a result of its own, next to the mean of the test numbers.
+- Variants 63 and 64 (free and use in different files) cannot be detected by Semgrep OSS; the
+  fold that holds them has a recall ceiling. This is part of the spread.
+- Tests: `tests/test_llm.py` (4), `tests/test_crossval.py` (11). Suite: 80 passed.
+
+## Phase 12 - alerts on the statement that marks the variable (2026-10-05)
+
+Motivation: 79% of the real-world alerts of the best combo D rule are on a line that is itself the
+`free()` the rule treats as the source (experiments.md). One alert line does not show that, and the
+corrector never removed it in 6 corrections.
+
+| # | Change | Where | Kind |
+|---|---|---|---|
+| 25 | `evaluate` counts the real-world alerts that sit on a line also matched by the rule's own `pattern-sources` (it extracts the pattern strings of the sources, ignoring `pattern-not*`, `metavariable*` and `focus*`, and runs them as a search rule over the files with alerts). The feedback adds "N of these M alerts (P%) are on a line that one of the rule's own source patterns also matches: the alert is raised on the statement that marks the variable. A sink must not match the statement that marks the variable." Search rules and rules without such alerts get no line. Stored as `negative_on_source` in the report | `gate.py` | feedback |
+
+Notes to declare:
+- It is generic: it knows nothing about any CWE, function or Juliet file, and works for any taint rule.
+  It does say what is wrong with the rule's structure, which is more than the earlier feedback, so
+  it is a feedback aid like the others in changes.md and must be reported as one.
+- It costs one more Semgrep run on the files with alerts (a few seconds).
+- Tests: three in `tests/test_gate.py`. Whether it helps the corrector is measured in experiments.md.
+
+## Phase 13 - `not_inside` in the template entries (template v2, 2026-10-05)
+
+Cause: in the run with the source-line warning the model wrote the right idea (exclude the `free()` statement from the
+uses) with `not`, which cannot express it (experiments.md). A format change, not feedback: it widens what the model can
+write, it does not write it.
+
+| # | Change | Where | Kind |
+|---|---|---|---|
+| 26 | Taint entries (sources, sinks, sanitizers, hence also the template `uses`) accept `not_inside: [...]`, built as `pattern-not-inside` after the `pattern-not` entries. Errors: an empty list or a non-string is explained; the unknown-key message lists it | `spec.py` | format |
+| 27 | The template prompts (generator and corrector) describe it: `not` excludes a match only when it is exactly one of the patterns, `not_inside` excludes a use located anywhere inside code matching one of them; the JSON example shows it with the generic name `wrapper(...)` | `prompts/template_generator.md`, `prompts/template_corrector.md` | prompt |
+
+Notes to declare:
+- The sentence about what `not` matches paraphrases the Semgrep behaviour of `pattern-not` and tells the model there
+  is a difference to use; it names no CWE, function or file. The spec prompts were not changed (the builder accepts the
+  key there too).
+- Results before and after this change are template v1 and v2: report them separately.
+- Tests: three in `tests/test_spec.py`, one of them runs Semgrep and shows that `not` keeps the alert inside the marking
+  call while `not_inside` removes it and keeps the later use.
+
+## Phase 14 - feedback on a `not` that equals a source pattern (2026-10-05)
+
+Cause: with `not_inside` available (phase 13) the model still wrote `not` in every use. The alerts on the marking statement
+(phase 12) said what was wrong, not why the `not` it wrote did nothing.
+
+| # | Change | Where | Kind |
+|---|---|---|---|
+| 28 | When real-world alerts sit on a source line, the gate looks at the sinks of the rule for `pattern-not` strings that are also a source pattern (`_sink_nots_equal_to_sources`; stored as `ineffective_nots`) and the feedback adds: "Your `not` of `P` on the uses does not remove them: a `not` (Semgrep `pattern-not`) only excludes a match that is exactly that pattern, and a use is usually just part of a statement (for instance the argument of a call). `not_inside` (Semgrep `pattern-not-inside`) excludes the uses that sit anywhere inside code matching it." Up to three patterns | `gate.py` | feedback |
+
+Notes to declare:
+- It is generic (Semgrep semantics of `pattern-not` against `pattern-not-inside`), names no CWE, function or file, but it is
+  close to telling the model what to write: it is the strongest feedback aid so far and the result of runs with it must be
+  reported as a result of the pipeline *with* that aid.
+- It only triggers when the problem has been measured (alerts on source lines) and the specific mistake is present.
+- Tests: two in `tests/test_gate.py`, one with Semgrep (a `not` equal to the source pattern is flagged and the alert stays;
+  `pattern-not-inside` removes the alert and the flag).

@@ -272,6 +272,22 @@ loops (best-of-N); the gate picks the best attempt on the train files and only t
 evaluated on the held-out test files. The fraction of samples that pass is a measure of
 how often a model can write a valid rule.
 
+`--negatives DIR [--max-negative-rate R] [--negatives-max-files N]` also grades the rule on
+real-world C code (e.g. a clone of a mature open-source project) that is assumed correct:
+the files are split into train/test by a hash of their path, every match is an alert, and a
+passing rule must raise at most `R` alerts per KLOC (default 0.1) on the train side. The
+corrector sees the alerts together with the code around them. The same options exist in
+`python -m src.pipeline.gate` (`--negatives`, `--max-negative-rate`). See
+[docs/changes.md](docs/changes.md) phase 10.
+
+`python -m src.pipeline.crossval --combo C --cwe CWE-416 --format template --folds 5 --negatives ../git`
+runs the whole loop once per fold of a k-fold split by flow variant (one model load, rules under
+`rules/crossval/`, never `rules/accepted/`) and prints the held-out recall and precision per fold
+and their mean and standard deviation. `synthesize --folds K --fold i` runs a single fold, and
+`synthesize --rules-dir DIR` redirects the candidate and accepted rules. A model call that takes
+more than `max_seconds` (role setting, default 600) is cut. See [docs/changes.md](docs/changes.md)
+phase 11.
+
 The ablation table (what each change did, per factor) is in [docs/ablation.md](docs/ablation.md).
 
 Results of the runs so far are in [docs/experiments.md](docs/experiments.md); the errors

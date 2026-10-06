@@ -383,3 +383,305 @@ with 0 FP (the rule above). The cover therefore has one rule and the union equal
 did not hold here: the 0-FP rules of the yaml/spec arms have train recall 0% (their test
 recall came from the test variants, not from generalization), and the rules with recall
 have 6-104 FP. The tool is ready for `--max-fp > 0` and for other CWEs.
+
+## Real-world negatives (Git source), CWE-416, 2026-10-04
+
+Reference code: `git/git` at commit `8103b44651` (644 `.c` files, 447 KLOC), split by file hash
+into 446 train files (287.7 KLOC) and 198 test files (111.9 KLOC), seed 0. The code is assumed
+correct: every match is an alert. Gate and feedback changes are in changes.md, phase 10.
+
+**The accepted rule of combo D (template arm)** raises 2.15-2.19 alerts/KLOC on the train side
+and 2.54-2.61 on the test side (about 900 alerts in all), against 0 false positives on Juliet.
+In a random sample of 40 alerts none was a real use after free (24 sequences of `free` on sibling
+fields in release functions, 10 loops over different elements, 5 reassignments by wrappers such
+as `xstrdup`, 1 correct callee). Upper bound of its precision on this code: about 7.5% (95%).
+
+**Combo C, template, seed 0, 6 fixes, `--negatives ../git --max-negative-rate 0.1`**
+(log `logs/runs/c416_negatives_seed0.log`, candidates `rules/candidates/C/CWE-416/20261004-150835`).
+**Interrupted**: attempt 5 took 2729 s (the others 18-30 s; cause unknown) and the process hit
+the 50 minute limit during attempt 6, so there is no run JSON. Attempts as printed:
+
+| Attempt | Outcome |
+|---|---|
+| 0 | rejected before the gate: lint (`printLine` copied from the example) |
+| 1 | train recall 100%, 906 Juliet FP, 38 real-world alerts (0.13/KLOC) |
+| 2 | exactly the same rule as attempt 1 (not re-tested) |
+| 3 | recall 100%, 854 FP, 32 real-world alerts (0.11/KLOC) |
+| 4 | recall 100%, 516 FP, 12 real-world alerts (0.04/KLOC) |
+| 5 | rejected before the gate: `taint.sinks[1].focus must be a metavariable` (2729 s) |
+
+Final step redone by hand with the saved rules (same split, `_score`): best on train = the
+854-FP rule; **held-out test: recall 100%, precision 25.9%, 266 FP, 4 real-world alerts
+(0.04/KLOC)**. It is the same test result as the earlier combo C template run
+(`20260929-171815`). Not accepted. The replay also graded attempts 0 and 2, which the real
+run skipped; it does not change the choice (they match attempt 1).
+
+What it shows (one partial run, no conclusion about the corrector):
+- The loop with real-world negatives and counterexamples works end to end: the per-attempt
+  real-world alerts are in the output and in the corrector's feedback.
+- The two kinds of false positive are independent. This rule has recall 100% and 854 FP on
+  Juliet but only 0.11 alerts/KLOC on Git (narrow on real code), while the accepted D rule has
+  0 FP on Juliet and 2.1 alerts/KLOC on Git. A gate with only one of them accepts a rule that
+  the other would reject.
+- Juliet false positives went 906 -> 854 -> 516 over attempts 1-4. Without counterexamples
+  the same combo and seed stayed at 854 between attempts 2 and 3 (changes.md, phase 3), but a
+  single run does not tell whether the snippets caused the drop.
+
+The combo D run with the same options was killed by the system for low memory before the first
+attempt (the 30B model needs ~16.4 GB and 18.7 GB were free); it has no result.
+
+## Combo C, template, real-world negatives: complete run, 5-fold cross-validation, CWE-415 (2026-10-04/05)
+
+All with `--format template --seed 0 --max-fix-attempts 6 --negatives ../git --max-negative-rate 0.1`
+(Git `8103b44651`, 446 train / 198 test files), Qwen3-4B-Instruct-2507 Q6_K as generator and
+corrector. Rules under `rules/negatives/` and `rules/crossval/`, run logs in
+`logs/synthesis/C/`, summary in `logs/crossval/C/CWE-416/20261004-232956.json`, console output
+in `logs/runs/c416_negatives_seed0_rerun.log`, `c416_cv5.log`, `c415_negatives_seed0.log`.
+
+**CWE-416, seed 0, complete run** (`20261004-224705`; it repeats the interrupted run above and
+gives the same attempts, as expected at temperature 0): attempts 1/3/4 reach recall 100% with
+906/854/516 Juliet false positives and 38/32/12 real-world alerts; attempt 6 ends in a Semgrep
+parse error. Best on train: attempt 3. **Held-out test: recall 100%, precision 25.9%, 266 FP,
+4 real-world alerts (0.04/KLOC). Not accepted.** Model calls took 282-434 s each (the earlier
+combo C runs took 18-30 s). The 600 s limit was not reached. The cause is unknown; the GPU is
+shared with other programs on this machine (not checked in this run).
+
+**CWE-416, 5-fold cross-validation by variant** (each variant tested once, 4 per fold):
+
+| Fold | Test variants | Accepted | Test recall | Test precision | Test FP | Real-world alerts/KLOC |
+|---|---|---|---|---|---|---|
+| 0 | 06, 11, 16, 18 | no | 100% | 23.9% | 204 | 0.00 |
+| 1 | 08, 09, 12, 63 | no | 0% | - | 0 | 0.00 |
+| 2 | 02, 03, 05, 17 | no | 0% | - | 0 | 0.00 |
+| 3 | 04, 14, 15, 64 | no | 0% | - | 0 | 0.00 |
+| 4 | 01, 07, 10, 13 | no | 0% | - | 0 | 0.00 |
+
+**Accepted in 0 of 5 folds. Mean test recall 20.0% +- 44.7%** (one fold at 100%, four at 0%).
+Precision exists only for fold 0 (23.9%). In folds 1-4 every attempt that reached the gate was a
+valid rule that matched nothing (recall 0%, 0 FP, 0 alerts), or was rejected before the gate
+(copied names, `not` lists that are empty, repeated rules). The rule of fold 0 found every case
+with 204 false positives on Juliet: the same profile as the 4B model had in the single split
+(its rule was not inspected here).
+
+**CWE-415, seed 0, complete run** (`20261005-002007`): attempts either match nothing (recall 0%,
+0 FP, 0 alerts) or are rejected before the gate (duplicate `uses` key, empty `not` list, repeated
+rule). **Test recall 0%, not accepted.** Same as the earlier combo C template
+run of this CWE.
+
+What these runs say, with their limits (one seed per fold, one model):
+- Over the whole of CWE-416 the 4B model does not write a usable rule in the template arm: the
+  single-split 100% recall (precision 25.9%) was one fold in five, and the other four found
+  nothing. The mean recall of 20% is not a recall of the method but the average of a rule that
+  finds everything with many false positives and rules that find nothing.
+- Real-world alerts are not the binding constraint for this model: its rules are either broad on
+  Juliet or empty, and raise 0.00-0.13 alerts/KLOC on Git. They matter for the combo D rule.
+
+## Combo D, template, real-world negatives: complete run, 5-fold cross-validation, CWE-415 (2026-10-05)
+
+Same options as the combo C runs above (`--format template --seed 0 --max-fix-attempts 6
+--negatives ../git --max-negative-rate 0.1`), Qwen3-Coder-30B-A3B IQ4_XS (10 of 48 layers on the
+GPU) as generator and corrector, 14-61 s per attempt (one of 213 s, the first of each run 125 s
+with the model load). Rules under `rules/negatives/` and `rules/crossval/`; **the accepted rule
+`rules/accepted/D/cwe-416.yaml` of 2026-09-29 was not touched**. Console output in
+`logs/runs/d416_negatives_seed0.log`, `d416_cv5.log`, `d415_negatives_seed0.log`; run logs in
+`logs/synthesis/D/`; summary `logs/crossval/D/CWE-416/20261005-004132.json`.
+
+**CWE-416, seed 0, complete run** (`20261005-003303`), attempts reaching the gate:
+
+| Attempt | Train recall | Juliet FP | Real-world alerts |
+|---|---|---|---|
+| 1 | 54% | 0 | 626 (2.18/KLOC) |
+| 3 | 100% | 162 | 1844 (6.41/KLOC) |
+| 4 | 54% | 0 | 629 (2.19/KLOC) |
+| 5 | 87% | 6 | 681 (2.37/KLOC) |
+
+Attempts 0, 2 and 6 were rejected before the gate (empty `not`, copied name, Semgrep parse
+error). Attempts 1 and 4 are the profile of the rule accepted on 2026-09-29 (recall 54%, 0 FP):
+with the real-world limit **it is no longer accepted**. Best on train: attempt 5. **Held-out test:
+recall 87.8%, precision 85.7%, 6 FP, 297 real-world alerts (2.66/KLOC). Not accepted.**
+
+**CWE-416, 5-fold cross-validation by variant:**
+
+| Fold | Test variants | Accepted | Test recall | Test precision | Test FP | Real-world alerts/KLOC |
+|---|---|---|---|---|---|---|
+| 0 | 06, 11, 16, 18 | no | 100% | 60.9% | 36 | 7.38 |
+| 1 | 08, 09, 12, 63 | no | 100% | 52.9% | 48 | 6.46 |
+| 2 | 02, 03, 05, 17 | no | 100% | 55.3% | 42 | 7.04 |
+| 3 | 04, 14, 15, 64 | no | 88.9% | 80.0% | 6 | 2.66 |
+| 4 | 01, 07, 10, 13 | no | 57.1% | 100% | 0 | 2.01 |
+
+**Accepted in 0 of 5 folds. Mean test recall 89.2% +- 18.6%, mean precision 69.8% +- 19.9%, mean
+real-world rate 5.11 +- 2.56 alerts/KLOC (limit 0.1).** Compared with combo C (mean recall 20.0%):
+the 30B model finds a rule that detects most of every group of variants, including the unseen
+ones, so on Juliet the 2026-09-29 result was not luck of the split; what the models do not
+write is a rule that is quiet on real code.
+
+**CWE-415, seed 0** (`20261005-011941`): attempt 1 is a valid rule that matches nothing (recall
+0%, 0 FP); the corrector then returned exactly that rule five times (attempts 2-6).
+**Test recall 0%, not accepted**, as in the earlier combo D template run.
+
+What the real-world gate and the counterexamples did (three runs, 7 attempts each, one seed per
+fold; no ablation of the snippets was made):
+- **No attempt that detected anything came close to the limit.** The lowest real-world rate
+  among attempts with recall above 0, in all D runs, was 1.64 alerts/KLOC (16 times the limit);
+  the usual value is 1.9-2.6 for the recall-50% rules and 6-7 for the recall-100% ones. The
+  corrector, which received the alerts with the code around them, did not remove the pattern
+  that dominates them (a `free` of a field followed by other statements in a release function;
+  changes.md phase 10) within 6 corrections.
+- Alerts do not predict Juliet quality: the recall-100% rules of folds 0-2 raise 6.5-7.4
+  alerts/KLOC, the recall-57% rule of fold 4 raises 2.0, and both kinds have 0.1 as limit.
+- On Juliet alone the loop works better than any earlier combination (cross-validated recall
+  89%), and the failures that remain are semantic: repeated rules (up to 5 in a row in
+  CWE-415), names copied from the example, and empty or misplaced `not` lists.
+- Variants 63 and 64 are in the test sets of folds 1 and 3, and fold 1 still reaches recall 100%.
+  This does not show that the rule follows the flow across files: the gate counts a match anywhere
+  in a BAD file of the case as a detection (changes.md, gate), so a rule can "detect" a 63 case by
+  matching another statement of its file. Not checked here.
+
+## What the best combo D rule fires on in Git, and whether it finds real fixes (2026-10-05)
+
+Rule analysed: attempt 5 of the combo D run `20261005-003303` (recall 87% on train, 6 Juliet FP;
+709 alerts on the whole Git tree in directory mode, 2.4/KLOC). Scripts were run from the scratchpad,
+not versioned.
+
+**Where its alerts are.** 562 of 709 (79.3%) are on a line that is itself a `free()` call: 309 with no
+other `free` in the 6 lines before and 253 with one. 67 (9.4%) are assignments, 64 are other calls,
+16 other statements. 367 (51.8%) are in a function whose name contains release/free/clear/destroy/
+cleanup/reset/...: a correlation, because those functions are mostly sequences of `free`. So the
+dominant defect is structural: the use patterns (`$P->...`, `$F($P, ...)`...) also match the statement
+that marks the variable. A minimal reproduction with a generic sink `$F($X, ...)` shows it: after
+`mark(p)` the next `mark(p)` is reported, and so is the first one (tests/test_gate.py). Even without
+these alerts the rule would raise about 0.5 alerts/KLOC, five times the limit, so this is the largest
+cause and not the only one (the rest: reassignment by wrappers, loops).
+
+**Does it find real bugs?** 16 commits of Git since 2018 whose subject names a use-after-free, a double
+free or a freed pointer (filter: `use[- ]after[- ]free|double[- ]free|\bfreed\b|memory after`, no merges;
+`dangling` was in the first filter and was dropped after seeing that most of the 15 commits it added were
+about refs (dangling symrefs) or docs; two of them were about memory (`alloc: fix dangling pointer...`,
+`builtin/help: fix dangling reference...`) and left out as well. This choice was made after looking at the
+output). The changed
+`.c` file of each commit was taken before and after the fix and the rule run on both; an alert counts if
+it is within 10 lines of a line changed by the fix.
+
+| Rule | Commits with an alert near the fixed lines (before) | ...and gone after the fix |
+|---|---|---|
+| accepted 2026-09-29 (`rules/accepted/D/cwe-416.yaml`) | 5/16 | 2/16 |
+| attempt 5 above | 5/16 | 3/16 |
+
+The chance level is high, not low: 3% of the lines of those files are within 10 lines of an alert, but a
+line with `free()` has an alert within 10 lines in 120/334 = 36% of the cases (121/334 for the second rule),
+and a fix of a use after free is made around `free()`. **5/16 (31%) is not above 36%: the rules do not
+point at these fixes better than at any `free()`**. Limits: 16 commits, one file each, window of 10 lines
+and the same line numbers for the "after" file (approximate), no manual check of what each alert was.
+`rules/accepted/D/cwe-416.yaml` is the 2026-09-29 rule.
+
+## Combo D, 5-fold cross-validation with seed 1: interrupted after 2 folds (2026-10-05)
+
+`crossval --combo D --cwe CWE-416 --folds 5 --seed 1` (same options as seed 0). The seed changes the
+fold assignment, the examples shown to the generator and also the split of the real-world files (455
+train / 189 test files instead of 446 / 198). The system stopped the run for low memory during fold 3
+(a game and other programs were open at the same time; a leftover process of the run was still holding
+13 GB and was ended by hand). No summary file exists. The two finished folds (run logs in
+`logs/synthesis/D/CWE-416/20261005-111138.json` and `-112149.json`, console output in
+`logs/runs/d416_cv5_seed1.log`):
+
+| Fold | Test variants | Accepted | Test recall | Test precision | Test FP | Real-world alerts/KLOC |
+|---|---|---|---|---|---|---|
+| 0 | 01, 04, 11, 12 | no | 57.1% | 100% | 0 | 1.61 |
+| 1 | 06, 09, 14, 17 | no | 100% | 22.0% | 354 | 0.07 |
+
+Fold 1 is the first D result under the real-world limit (0.07 alerts/KLOC, limit 0.1), but with 354
+Juliet false positives, so it was not accepted either. It shows again that the two kinds of false
+positive move independently. Two folds of one seed are not a result; seed 2 was not started.
+
+## Combo D, template, with the source-line warning and with `not_inside` (2026-10-05)
+
+Both runs: CWE-416, seed 0, 6 fixes, `--negatives ../git --max-negative-rate 0.1`, `--rules-dir rules/negatives`,
+combo D. Compared with the run `20261005-003303` above (no warning).
+
+**With the warning only** (`20261005-141707`, console `logs/runs/d416_negatives_seed0_warning.log`): the warning
+reached the corrector (82-93% of the alerts of the recall-54% rule were on a line one of its own sources
+matches). Every attempt that reached the gate had recall 54%, 0 Juliet FP and 559-645 real-world alerts
+(1.94-2.24/KLOC); 1 of 7 attempts was a repeated rule. Best on train: attempt 2. **Held-out test: recall 48.8%,
+precision 100%, 0 FP, 257 real-world alerts (2.30/KLOC). Not accepted** (the same test numbers as the rule
+accepted on 2026-09-29, which is the profile the corrector kept returning to).
+The model understood the warning in words ("it matched the free() call itself as a use") and wrote the right idea
+in every use, `"not": ["free($P)"]`. That cannot work: Semgrep's `pattern-not` only excludes a match equal to the
+pattern, and the sink `$P->...` matches the argument `x->f` inside `free(x->f)`, not the call. Diagnostic (a
+hand-made copy of attempt 5 with `pattern-not-inside: free(...)` instead of `pattern-not`, not a result): same
+train recall 54% and 0 Juliet FP, real-world alerts 637 -> 116 (2.21 -> 0.40/KLOC), none left on a source line.
+
+**With `not_inside` in the template** (template v2, changes.md phase 13; `20261005-143203`, console
+`logs/runs/d416_negatives_seed0_notinside.log`): all 7 attempts reached the gate with recall 54% and 0 Juliet FP;
+real-world alerts 460-474 (1.60-1.65/KLOC), 95% of them on a source line (438-447 of 460-474). **No attempt wrote
+`not_inside` in a use**; every use kept `"not": ["free($P)"]`, and the corrector's explanations say "added a `not`
+condition to exclude the free() call". Best on train: attempt 1. **Held-out test: recall 48.8%, precision 100%, 0 FP,
+226 real-world alerts (2.02/KLOC). Not accepted.**
+
+Reading (one seed, one model): the missing operator was part of the problem, because without it the right idea is
+inexpressible, but making it available is not enough: the 30B model keeps the form it wrote in the first attempt
+and the prompt text that says `not` only matches equal patterns did not change what it writes. The lower real-world
+rate of this run (1.6 against about 2.2/KLOC) comes from a different first rule, not from `not_inside`, since it was
+never used. Template v1 and v2 results must not be mixed.
+
+## Combo D, final configuration (template v2 + source-line warning + ineffective-`not` feedback), seed 0 (2026-10-05)
+
+`--format template --max-fix-attempts 6 --negatives ../git --max-negative-rate 0.1`, combo D. The feedback now also says,
+when real-world alerts sit on a source line and a use has a `not` equal to a source pattern, that such a `not` does not
+remove them and that `not_inside` does (changes.md phase 14). Console: `logs/runs/d416_final_seed0.log`,
+`d416_final_cv5_seed0.log`; summary `logs/crossval/D/CWE-416/20261005-150232.json`.
+
+**Complete run** (`20261005-145350`): attempts at the gate reach recall 54%/1.61 alerts per KLOC, 100% (162 Juliet FP,
+6.43/KLOC), 87% (6 FP, 1.80/KLOC) and 100% (6 FP, 1.84/KLOC). Best on train: attempt 6. **Held-out test: recall 100%,
+precision 87.2%, 6 FP, 251 real-world alerts (2.24/KLOC). Not accepted.**
+
+**5-fold cross-validation:**
+
+| Fold | Test variants | Accepted | Test recall | Test precision | Test FP | Real-world alerts/KLOC |
+|---|---|---|---|---|---|---|
+| 0 | 06, 11, 16, 18 | no | 85.7% | 100% | 0 | 2.73 |
+| 1 | 08, 09, 12, 63 | no | 100% | 52.9% | 48 | 6.55 |
+| 2 | 02, 03, 05, 17 | no | 57.1% | 100% | 0 | 1.16 |
+| 3 | 04, 14, 15, 64 | no | 100% | 52.9% | 48 | 6.44 |
+| 4 | 01, 07, 10, 13 | no | 85.7% | 100% | 0 | 2.28 |
+
+**Accepted in 0 of 5 folds. Mean test recall 85.7% +- 17.5%, mean precision 81.2% +- 25.8%.** The first cross-validation
+of combo D (template v1, no warning) gave recall 89.2% +- 18.6% and precision 69.8% +- 19.9%: the same level.
+
+**Did the model use `not_inside`?** Over the six runs (plain + 5 folds, 42 attempts) it wrote a `not_inside` in a use in 21
+attempts, and the ineffective-`not` feedback was shown in 11 reports. Without that feedback it never wrote it (0 of 7
+attempts in the run above). So the direct feedback changed what the model writes. The effect on the alerts is partial: the
+lowest real-world rate among attempts with recall above 0 was 1.04 alerts/KLOC (median 2.14; limit 0.1). What the model
+writes is `"not_inside": ["free($P)"]`, repeating the metavariable `$P` of the use: it only excludes a use inside a `free`
+whose argument is the same variable, and `x->f` inside `free(x->f)` is not (the hand-made diagnostic that reached 0.40/KLOC
+used `free(...)`). In the rule with 1.04/KLOC 64% of the alerts are still on a source line (191 of 298), against 82-95% in
+the earlier runs. Some attempts that used it lost all recall (a rule with both `not` and `not_inside` of `free($P)` on its
+uses matched nothing). The next level of feedback (explaining the metavariable) was not added: it would be giving the rule.
+
+## Cross-validation runs that were interrupted or ran unnoticed (2026-10-05)
+
+**Seed 2, complete, with the source-line warning, template v1** (`logs/crossval/D/CWE-416/20261005-115707.json`,
+console `logs/runs/d416_cv5_seed2.log`). It was started by the shell script of the interrupted seed-1 run when
+I ended that run's Python process by hand (the script outlived the memory stop and went on to the next seed); it ran to
+the end in the background, 11:57-13:07, and I did not notice it until later. The modules were loaded when it started,
+after the warning of phase 12 and before `not_inside` (phase 13): every report has `negative_on_source`, no response has
+a `not_inside`. It is a valid cross-validation of the configuration "template v1 + warning":
+
+| Fold | Test variants | Test recall | Test precision | Test FP | Real-world alerts/KLOC |
+|---|---|---|---|---|---|
+| 0 | 06, 08, 15, 16 | 100% | 57.1% | 42 | 6.36 |
+| 1 | 05, 07, 12, 14 | 57.1% | 100% | 0 | 1.86 |
+| 2 | 01, 11, 18, 63 | 44.4% | 100% | 0 | 2.26 |
+| 3 | 03, 04, 09, 13 | 57.1% | 100% | 0 | 1.67 |
+| 4 | 02, 10, 17, 64 | 88.9% | 80.0% | 6 | 1.74 |
+
+Accepted 0/5; mean recall 69.5% +- 23.7%, precision 87.4% +- 19.0%, real-world 2.78 +- 2.02 alerts/KLOC. The real-world
+split of this seed differs from seed 0 (seed-dependent), so the rates are not paired with the seed-0 runs.
+
+**Seed 1, template v1, no warning: 2 folds** (run stopped by the system, see above): recall 85.7% / precision 100% /
+1.61 alerts/KLOC and recall 100% / precision 22.0% / 0.07 alerts/KLOC (already listed).
+
+**Seed 1, final configuration: 1 fold** (stage D2, stopped by the system during fold 2; console
+`logs/runs/d416_final_cv5_seed1.log`): fold 0, variants 01, 04, 11, 12: recall 85.7%, precision 100%, 0 FP, 231 real-world
+alerts (1.86/KLOC). **Seed 2 of the final configuration was never run.** In this stop the leftover script started the seed-2 run
+as soon as I ended the seed-1 process, and I ended both by hand within a minute.
