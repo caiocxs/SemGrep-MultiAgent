@@ -230,3 +230,7 @@ logs/
 
 # Generated rule candidates (every attempt of every run; accepted rules stay tracked)
 rules/candidates/
+# Experiment outputs: downloaded baseline packs, cross-validation and real-world-gate runs (accepted rules stay tracked)
+rules/baseline/
+rules/crossval/
+rules/negatives/
