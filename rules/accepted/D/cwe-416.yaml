@@ -1,0 +1,49 @@
+rules:
+- message: 'Use after free: pointer is used after being freed'
+  mode: taint
+  pattern-sources:
+  - patterns:
+    - pattern: free($P)
+    - focus-metavariable: $P
+    by-side-effect: true
+  pattern-sinks:
+  - patterns:
+    - pattern: $P[...]
+    - focus-metavariable: $P
+  - patterns:
+    - pattern: $P->...
+    - focus-metavariable: $P
+  - patterns:
+    - pattern: '* $P'
+    - focus-metavariable: $P
+  - patterns:
+    - pattern: memcpy($P, ...)
+    - pattern-not: memcpy($P, $P, ...)
+    - focus-metavariable: $P
+  - patterns:
+    - pattern: strcpy($P, ...)
+    - pattern-not: strcpy($P, $P)
+    - focus-metavariable: $P
+  pattern-sanitizers:
+  - patterns:
+    - pattern: $P = NULL
+    - focus-metavariable: $P
+    by-side-effect: true
+  - patterns:
+    - pattern: $P = malloc(...)
+    - focus-metavariable: $P
+    by-side-effect: true
+  - patterns:
+    - pattern: $P = calloc(...)
+    - focus-metavariable: $P
+    by-side-effect: true
+  - patterns:
+    - pattern: $P = realloc(...)
+    - focus-metavariable: $P
+    by-side-effect: true
+  id: gen-cwe-416
+  languages:
+  - c
+  severity: ERROR
+  metadata:
+    cwe: CWE-416
