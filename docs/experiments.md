@@ -685,3 +685,42 @@ split of this seed differs from seed 0 (seed-dependent), so the rates are not pa
 `logs/runs/d416_final_cv5_seed1.log`): fold 0, variants 01, 04, 11, 12: recall 85.7%, precision 100%, 0 FP, 231 real-world
 alerts (1.86/KLOC). **Seed 2 of the final configuration was never run.** In this stop the leftover script started the seed-2 run
 as soon as I ended the seed-1 process, and I ended both by hand within a minute.
+
+## Combo D, final configuration, cross-validation seeds 1 and 2 (2026-10-06)
+
+Run with `scripts/run_crossval_seeds.ps1 -Seeds 1,2` (combo D, template v2, source-line warning and `not` feedback, 5 folds,
+6 fixes, `--negatives ../git`); both seeds completed without being stopped. Summaries
+`logs/crossval/D/CWE-416/20261006-001149.json` (seed 1) and `20261006-005913.json` (seed 2); logs
+`logs/runs/crossval_D_CWE-416_seed{1,2}_20261006-001149.log`.
+
+| Seed | Fold | Test variants | Test recall | Test precision | Test FP | Real-world alerts/KLOC |
+|---|---|---|---|---|---|---|
+| 1 | 0 | 01, 04, 11, 12 | 85.7% | 100% | 0 | 1.82 |
+| 1 | 1 | 06, 09, 14, 17 | 57.1% | 100% | 0 | 1.63 |
+| 1 | 2 | 02, 03, 15, 18 | 57.1% | 100% | 0 | **0.105** |
+| 1 | 3 | 13, 16, 63, 64 | 100% | 55.3% | 42 | 6.81 |
+| 1 | 4 | 05, 07, 08, 10 | 57.1% | 100% | 0 | 1.61 |
+| 2 | 0 | 06, 08, 15, 16 | 100% | 57.1% | 42 | 7.02 |
+| 2 | 1 | 05, 07, 12, 14 | 57.1% | 100% | 0 | 0.37 |
+| 2 | 2 | 01, 11, 18, 63 | 44.4% | 100% | 0 | 1.93 |
+| 2 | 3 | 03, 04, 09, 13 | 57.1% | 100% | 0 | 2.13 |
+| 2 | 4 | 02, 10, 17, 64 | 100% | 81.8% | 6 | 1.90 |
+
+Seed 1: accepted 0/5, recall 71.4% +- 20.2%, precision 91.1% +- 20.0%, real-world 2.40 +- 2.56 alerts/KLOC.
+Seed 2: accepted 0/5, recall 71.7% +- 26.3%, precision 87.8% +- 18.9%, real-world 2.67 +- 2.53 alerts/KLOC.
+Seed 2 has the same folds and real-world files as the earlier run with template v1 + warning (recall 69.5% +- 23.7%,
+precision 87.4% +- 19.0%, 2.78 +- 2.02): the differences are within the spread over folds.
+
+**Use of `not_inside`** (70 new attempts): written in 25, the ineffective-`not` feedback was shown in 20 reports. Over the
+three seeds of the final configuration (112 attempts), 42 attempts reached the gate with a `not_inside`; of the 31 of them
+with recall above 0, 30 use a pattern with the use's own metavariable (typically `free($P)`: lowest real-world rate 1.04, median
+2.37 alerts/KLOC) and one uses a new one.
+
+**Seed 1, fold 2, attempt 6** (`logs/synthesis/D/CWE-416/20261006-003406.json`, candidate under `rules/crossval/`): attempts 0-5
+had train recall 51%, 0 Juliet FP and 585-671 real-world alerts (2.1-2.4/KLOC, 84-94% on a source line); attempt 1 was
+rejected before the gate (copied name). Attempt 6 wrote `"not": ["free($P)"], "not_inside": ["free($X)"]` on its six uses
+(`$P[...]`, `$P->...`, `*$P`, and `memcpy`, `strcpy`, `strncpy` with `$P` as an argument), with the resets `$P = malloc(...)`,
+`calloc`, `realloc`, `NULL` and `$P = $Q`. Train: recall 51%, 0 Juliet FP, 38 real-world alerts (0.138/KLOC), none on a source line:
+not accepted (limit 0.1). **Held-out test: recall 57.1%, precision 100%, 0 FP, 13 real-world alerts (0.1047/KLOC).** Neither the
+`$X` nor `free(...)` was given to the model; the diagnostic of 2026-10-05 used `free(...)` by hand. One attempt in 31, half of the
+cases detected, one seed: an observation that the neighbourhood of the limit is reachable, not an accepted rule.
