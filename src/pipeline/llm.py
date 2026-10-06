@@ -8,6 +8,10 @@ with a different model unloads the previous one first.
 import gc
 import time
 
+# A call that has not finished after this many seconds is cut and its partial text returned: in one run a
+# 4B model took 2729 s for an answer that normally takes 25 s (cause unknown) and blocked the whole loop.
+DEFAULT_MAX_SECONDS = 600
+
 
 class LocalLLM:
     def __init__(self, combo):
@@ -44,17 +48,28 @@ class LocalLLM:
             self._loaded = None
             gc.collect()
 
-    def complete(self, role, prompt, temperature=None):
+    def complete(self, role, prompt, temperature=None, max_seconds=None):
         """
         Returns (response_text, seconds) for a single-turn prompt with the role's settings;
-        `temperature` overrides the combo's value for this call.
+        `temperature` overrides the combo's value for this call. The answer is streamed and
+        cut after `max_seconds` (default: the role's `max_seconds` setting, else
+        DEFAULT_MAX_SECONDS); the partial text is returned, which the rule parser then
+        rejects like any other malformed answer.
         """
         settings = self.combo["roles"][role]
         self._load(settings)
+        limit = max_seconds or settings.get("max_seconds", DEFAULT_MAX_SECONDS)
         start = time.time()
-        response = self._llm.create_chat_completion(
+        stream = self._llm.create_chat_completion(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=settings["max_tokens"],
             temperature=settings.get("temperature", 0.0) if temperature is None else temperature,
+            stream=True,
         )
-        return response["choices"][0]["message"]["content"], time.time() - start
+        parts = []
+        for chunk in stream:
+            parts.append(chunk["choices"][0]["delta"].get("content") or "")
+            if time.time() - start > limit:
+                print(f"  {role} cut after {limit}s")
+                break
+        return "".join(parts), time.time() - start
