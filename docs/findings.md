@@ -37,8 +37,8 @@ real-world files: they are not paired.
    variants** (mean recall 70-89% over folds), with mean precision 70-91%. The 4B model does not (mean recall 20%: one fold at
    100% with 204 false positives, four with rules that match nothing). The single "first accepted rule" of 2026-09-29 (recall
    48.8%, precision 100%) is at the low end of what the same model produces (per-fold recall 44-100%).
-2. **No rule satisfies both gates.** The rules with 0-6 Juliet false positives raised 1.0 or more alerts per KLOC on Git (median
-   about 2) against a limit of 0.1; the only rules under the limit (0.04 and 0.07 alerts/KLOC) had 266 and 354 Juliet false
+2. **No rule satisfies both gates.** Most rules with 0-6 Juliet false positives raised 1.0 or more alerts per KLOC on Git (median
+   about 2) against a limit of 0.1; two held-out folds were lower (0.37 and 0.105, both above the limit); the only rules under the limit (0.04 and 0.07 alerts/KLOC) had 266 and 354 Juliet false
    positives. One rule came close with no Juliet false positives (finding 8). The rule accepted on Juliet raises 2.1 and none of 40 sampled alerts was a real bug. Zero false positives on
    Juliet does not predict behaviour on real code.
 3. **The dominant defect is structural and the models can say it but not write it.** About 80% of the alerts of the best rules
