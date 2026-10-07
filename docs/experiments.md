@@ -724,3 +724,32 @@ rejected before the gate (copied name). Attempt 6 wrote `"not": ["free($P)"], "n
 not accepted (limit 0.1). **Held-out test: recall 57.1%, precision 100%, 0 FP, 13 real-world alerts (0.1047/KLOC).** Neither the
 `$X` nor `free(...)` was given to the model; the diagnostic of 2026-10-05 used `free(...)` by hand. One attempt in 31, half of the
 cases detected, one seed: an observation that the neighbourhood of the limit is reachable, not an accepted rule.
+
+## Alert-by-alert review of the rule nearest to the limit (2026-10-07)
+
+The rule of seed 1, fold 2, attempt 6 (finding 8 of findings.md) raises 38 alerts on the train files and 13 on the test files of
+Git, 51 in the 644 `.c` files: few enough to read **every** one. Each was read with 12 lines before and 3 after the alert and,
+where that was not enough, with the rest of the function and the helpers it calls (checked in the Git source). The list, with a
+category and a reason per alert, is `docs/alert_review_seed1_fold2_attempt6.csv`.
+
+| Why the alert is not a use after free | Alerts |
+|---|---|
+| a loop moves on to another element (index or pointer advances after the `free`) | 12 |
+| the pointer is assigned again by a macro (`FLEX_ALLOC_STR`, `CALLOC_ARRAY`, a `for_each` iterator) | 11 |
+| the slot of the freed element is overwritten (`MOVE_ARRAY`, `memmove`: remove-from-array idiom) | 9 |
+| a different object was freed (the elements, then the array; or a sibling field) | 8 |
+| the pointer is assigned again through an out-parameter (`git_config_string(&x->f, ...)`, `&content`) | 6 |
+| the path is unreachable (`die()` does not return; `continue` after the `free`) | 2 |
+| assigned again in place (`free(p); p = xmalloc(sizeof(*p))`) | 1 |
+| checked: not a double free (`string_list_clear` on a list that does not own its strings) | 1 |
+| the pointer value is compared after the `free` and never dereferenced (`pack-objects.c:2945`; undefined by the letter of C, deliberate and harmless) | 1 |
+| **real use after free** | **0** |
+
+**0 real bugs in 51 alerts**, with one borderline benign case. With every alert read, the precision of this rule on Git is 0 of 51
+(no sampling error; the limit is that the reviewer is one person and that a bug that the reading missed would count as a false
+positive). The categories show what the rule does not model: reassignment by macros and out-parameters, loops that advance, and the
+remove-from-array idiom. They are the same families as in the 40-alert sample of the rule accepted on 2026-09-29 and in the 709 alerts
+classified by line type, so the larger, noisier rules were not read alert by alert: that would be several hundred to a few thousand alerts per rule.
+
+The review covers the alerts the rules **raise** (false positives). It says nothing about what they **miss** (false negatives);
+that is measured only on Juliet and on the 16 fix commits.

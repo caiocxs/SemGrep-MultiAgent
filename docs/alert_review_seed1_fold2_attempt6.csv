@@ -1,0 +1,52 @@
+id,side,file,line,category,note
+0,train,alloc.c,56,different-object-freed,FREE_AND_NULL of the array s->slabs after freeing its elements s->slabs[i]
+1,train,bisect.c,461,reassigned-in-place,"free(current_bad_oid) then current_bad_oid = xmalloc(sizeof(*current_bad_oid)): reassigned, and sizeof does not evaluate its operand"
+2,train,bloom.c,523,reassigned-by-macro,e is assigned by FLEX_ALLOC_STR at the top of each iteration; the earlier free(e) belongs to a previous iteration
+3,train,bloom.c,525,reassigned-by-macro,same: e freshly allocated by FLEX_ALLOC_STR
+4,train,bloom.c,526,reassigned-by-macro,same: e freshly allocated by FLEX_ALLOC_STR
+5,train,bloom.c,557,reassigned-by-macro,"e is the iterator of hashmap_for_each_entry, assigned by the macro"
+6,train,builtin/notes.c,136,loop-moves-to-another-element,free(d->messages[d->msg_nr]) in a while (d->msg_nr--) loop: each iteration touches a different element
+7,train,builtin/notes.c,332,unreachable-path,"free(msg) is inside a branch that ends in die(), which does not return"
+8,train,builtin/repack.c,92,reassigned-by-out-parameter,"free(x->window) then git_config_string(&x->window, ...): the address is passed and the call assigns a new value"
+9,train,builtin/repack.c,96,reassigned-by-out-parameter,"same, field window_memory"
+10,train,builtin/repack.c,100,reassigned-by-out-parameter,"same, field depth"
+11,train,builtin/repack.c,104,reassigned-by-out-parameter,"same, field threads"
+12,train,builtin/repo.c,873,reassigned-by-out-parameter,taint comes from free(content) of the previous iteration; content is assigned again through oi.contentp = &content
+13,train,cache-tree.c,40,loop-moves-to-another-element,free(it->down[i]) in a for loop over i
+14,train,cache-tree.c,146,array-slot-overwritten,MOVE_ARRAY overwrites the slot of the freed element (remove-from-array idiom)
+15,train,dir.c,3585,different-object-freed,"memcpy(dir, &new, sizeof(*dir)) writes the struct itself; only its members were freed"
+16,train,help.c,197,loop-moves-to-another-element,"free(cmds->names[i]) for a duplicate; next iteration reads other elements, names[j-1] is never freed"
+17,train,help.c,213,loop-moves-to-another-element,the matching entry is freed with names[ci++]: the index advances
+18,train,hook.c,81,different-object-freed,h->data_free(h->feed_pipe_cb_data): a different field than the ones freed above
+19,train,midx-write.c,1831,loop-moves-to-another-element,cleanup loop over i; each iteration frees ctx.info[i].p of its own element
+20,train,midx-write.c,1832,loop-moves-to-another-element,same
+21,train,object.c,576,loop-moves-to-another-element,free(o->grafts[i]) inside a for loop over i
+22,train,pathspec.c,763,different-object-freed,FREE_AND_NULL of the array pathspec->items after freeing members of each item
+23,train,pretty.c,2159,loop-moves-to-another-element,free(items[i].string) inside a for loop over i
+24,train,pretty.c,2162,verified-no-error,"string_list_clear after freeing the strings by hand: the list is zero-initialised (no strdup_strings), items are only appended with strbuf_detach, so clear does not free them again"
+25,train,ref-filter.c,2519,reassigned-by-out-parameter,"free(v->s) then fill_remote_ref_details(..., &v->s): the call assigns v->s"
+26,train,sequencer.c,4562,array-slot-overwritten,"update_refs removal loop: MOVE_ARRAY overwrites the freed slot, then i-- re-reads it"
+27,train,sequencer.c,4564,array-slot-overwritten,same loop
+28,train,sequencer.c,4567,array-slot-overwritten,same loop
+29,train,sequencer.c,4589,array-slot-overwritten,"MOVE_ARRAY itself, run right after freeing the removed element"
+30,train,sequencer.c,4609,array-slot-overwritten,second loop over the list after the first loop removed (and overwrote) the freed slots
+31,train,shell.c,124,unreachable-path,free(split_args) is followed by continue; argv[0] is read only on the other path
+32,train,strbuf.c,228,loop-moves-to-another-element,while (*s) { ...; free(*s++); }: the pointer advances
+33,train,strbuf.c,229,loop-moves-to-another-element,same
+34,train,string-list.c,83,array-slot-overwritten,MOVE_ARRAY overwrites the slot of the freed element
+35,train,string-list.c,115,loop-moves-to-another-element,free(items[src].string) in a loop over src
+36,train,strvec.c,74,array-slot-overwritten,memmove moves pointers over the slots of the freed strings; nothing is dereferenced
+37,train,strvec.c,97,array-slot-overwritten,memmove overwrites the slot of the freed string
+38,test,add-interactive.c,240,reassigned-by-macro,"free(items->selected) then CALLOC_ARRAY(items->selected, ...): reassigned by the macro"
+39,test,add-interactive.c,253,reassigned-by-macro,free and CALLOC_ARRAY are in the same branch; on the other path the pointer is never freed (path-insensitive)
+40,test,add-interactive.c,345,reassigned-by-macro,same
+41,test,add-interactive.c,895,loop-moves-to-another-element,"free(item) / free(items[i].string) in other branches of the same if chain, loop over i"
+42,test,builtin/difftool.c,510,reassigned-by-macro,entry assigned by FLEX_ALLOC_STR
+43,test,builtin/difftool.c,511,reassigned-by-macro,same
+44,test,builtin/difftool.c,516,reassigned-by-macro,same; the earlier free(entry) is followed by continue
+45,test,builtin/pack-objects.c,2945,benign-pointer-compare,"if (trg_entry->delta_data) after free(trg_entry->delta_data): only the pointer value is compared and then set to NULL; undefined by the letter of C, harmless in practice and deliberate in the code"
+46,test,diff.c,7141,different-object-freed,FREE_AND_NULL of the array after freeing its elements
+47,test,diff.c,7158,different-object-freed,same
+48,test,pack-objects.c,53,reassigned-by-macro,"free(pdata->index) then CALLOC_ARRAY(pdata->index, ...)"
+49,test,remote.c,276,different-object-freed,FREE_AND_NULL of the array after freeing its elements
+50,test,submodule-config.c,946,different-object-freed,repo_clear(list->entries[i].repo) after freeing another field of the entry

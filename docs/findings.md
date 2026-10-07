@@ -68,6 +68,12 @@ real-world files: they are not paired.
    held-out test: recall 57.1%, precision 100%, 0 false positives, 13 real-world alerts (0.105/KLOC), also just above the limit.
    It is the model's own output (neither the form nor the metavariable was given), it is one attempt in 31, and its recall is
    half of the cases; it shows that the pipeline can reach the neighbourhood of the limit, not that it passes it.
+9. **Even that rule raises no true alert.** All 51 of its alerts on Git (38 train, 13 test) were read one by one: 0 are a use after
+   free. 12 are loops that move to another element, 11 reassignments by macros, 9 array slots overwritten, 8 a different
+   object, 6 out-parameter reassignments, 2 unreachable paths, 1 reassigned in place, 1 verified harmless and 1 borderline benign (a
+   pointer compared after `free`). Reasons and locations are in `docs/alert_review_seed1_fold2_attempt6.csv`. Getting under the alert limit
+   does not make the alerts correct: the real-world gate measures noise, not precision, and a rule can pass it by matching
+   less of the same kind of code.
 
 ## Threats to validity and limits
 
@@ -77,8 +83,9 @@ real-world files: they are not paired.
 - **Template arm:** the strategy (event, uses, resets as taint by side effect) was written by us; it is the knowledge being
   tested and the results must be reported apart from the yaml/spec arms. Template v2, the source-line warning and the `not`
   message are generic feedback aids (changes.md phases 12-14); the last one is close to giving the rule.
-- **Real-world code is assumed correct**; a real bug there counts as a false positive. The 40-alert triage was done by reading
-  about 12 lines of context, not by running code. Alert counts of one rule vary 1-2% between runs.
+- **Real-world code is assumed correct**; a real bug there counts as a false positive. The triage (40 sampled alerts of one rule, all
+  51 alerts of another) was done by one reviewer reading about 12 lines of context, plus the callee when needed, not by running
+  code; the noisy rules (hundreds of alerts each) were not read alert by alert. The review concerns false positives only. Alert counts of one rule vary 1-2% between runs.
 - **Fix-commit check:** 16 commits, one file each, window of 10 lines, the same line numbers before and after the fix; the
   commit filter was adjusted after seeing the first output (changes.md and experiments.md say how).
 - **Juliet recall** counts a match anywhere in a BAD file of a case as a detection, so it can overstate detection of cases split
