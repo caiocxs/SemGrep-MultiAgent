@@ -78,8 +78,9 @@ $results = @()
 
 # --- one cross-validation per seed ------------------------------------------
 foreach ($seed in $seedList) {
-    $tag = $(if ($NoDocs) { "_nodocs" } else { "" }) + $(if ($Tag) { "_$Tag" } else { "" })
-    $log = "logs\runs\crossval_${Combo}_${Cwe}${tag}_seed${seed}_${stamp}.log"
+    # not `$tag`: PowerShell variable names are case-insensitive, so that would overwrite the -Tag parameter
+    $logTag = $(if ($NoDocs) { "_nodocs" } else { "" }) + $(if ($Tag) { "_$Tag" } else { "" })
+    $log = "logs\runs\crossval_${Combo}_${Cwe}${logTag}_seed${seed}_${stamp}.log"
     $cmdArgs = @("-u", "-m", "src.pipeline.crossval",
         "--combo", $Combo, "--cwe", $Cwe, "--folds", $Folds, "--seed", $seed,
         "--format", $Format, "--max-fix-attempts", $MaxFixAttempts, "--negatives", $Negatives)

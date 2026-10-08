@@ -312,3 +312,30 @@ Notes to declare:
 - It only triggers when the problem has been measured (alerts on source lines) and the specific mistake is present.
 - Tests: two in `tests/test_gate.py`, one with Semgrep (a `not` equal to the source pattern is flagged and the alert stays;
   `pattern-not-inside` removes the alert and the flag).
+
+## Phase 15 - the roles around the loop, a paired comparison and a queue of experiments (2026-10-07)
+
+The evidence so far says that the models can state the right idea and cannot always write it, and that feedback written by us
+(phases 12-14) gets close to giving the rule. These changes make the other roles of the multi-agent design usable, so that their
+contribution can be measured instead of replaced by hand-written aids. All options are off by default: no earlier result changes.
+
+| # | Change | Where |
+|---|---|---|
+| 29 | `--history`: the corrector sees a summary of the earlier attempts (it kept returning the same rule) | `roles.py`, correctors |
+| 30 | `--critic`: another agent reviews each tested rule (why it fails, what kind of change would fix it) and the corrector gets the review as a fallible opinion. `--no-diagnosis` turns off the structural diagnoses of phases 12-14 in the gate feedback, to compare the critic with them | `roles.py`, `prompts/critic.md`, `gate.evaluate(diagnose=)` |
+| 31 | `--merge`: a final attempt in which a merger combines the best rule with one of a different strength (quieter, else stronger); the gate judges it like any attempt | `roles.py`, `synthesize.py` |
+| 32 | `--example-mode findings\|pairs\|none`: the detector's findings (as before), vulnerable/safe file pairs from the dataset labels, or no examples. `pairs` uses the labels, not the detector: it measures what better examples could give, not the pipeline as designed | `roles.py` |
+| 33 | `--no-docs`: the Semgrep documentation in the prompts is replaced by a note. In the spec and template formats that text is only the 1,278-character pattern-syntax section | `synthesize.py` |
+| 34 | The loop of `synthesize` is split into `step`, `review_by_critic` and `run_sample`; the role logic is in `roles.py` as pure helpers; an empty prompt marker removes its own line, so the prompts are unchanged when an option is off | `synthesize.py` |
+| 35 | Combo E: the 30B model in every role with identical load settings, so switching role never reloads it (the critic of combo D, Phi-4-mini, would swap models on every call) | `configs/combos/combo_e.toml` |
+| 36 | `python -m src.pipeline.compare`: paired comparison of two configurations run on the same seeds (same folds and real-world files): mean difference b - a, bootstrap interval over the folds, how often each side is better | `compare.py` |
+| 37 | `scripts/run_ablation_queue.ps1`: runs the planned comparisons one after another, waiting for free RAM before each | `scripts/` |
+
+Notes to declare:
+- Critic, merger and history are LLM agents; their output only changes the prompt of the next attempt, and every rule still goes
+  through the gate. The merger's rule is graded like any other attempt.
+- The pre-registered analysis (hypotheses, metrics, what counts as an effect) is in `docs/ablation_plan.md`; it was written before the
+  results of these comparisons.
+- Tests: `tests/test_roles.py` (21, with a fake model and a fake gate, no Semgrep), `tests/test_compare.py` (8), a prompt test per
+  format for `--no-docs`. The suite with Semgrep (111 tests, before `test_compare.py`) passed on 2026-10-07 after the refactor of the
+  loop; the 8 comparison tests pass on their own.

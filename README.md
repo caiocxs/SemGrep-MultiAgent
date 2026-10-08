@@ -272,6 +272,13 @@ loops (best-of-N); the gate picks the best attempt on the train files and only t
 evaluated on the held-out test files. The fraction of samples that pass is a measure of
 how often a model can write a valid rule.
 
+The roles around the loop are options of `synthesize` and `crossval` (all off by default): `--history` (the corrector sees the
+earlier attempts), `--critic` (an agent reviews each tested rule), `--merge` (a final attempt combines two rules),
+`--example-mode findings|pairs|none`, `--no-docs` (no Semgrep documentation in the prompts) and `--no-diagnosis` (no structural
+diagnoses in the gate feedback). `configs/combos/combo_e.toml` uses one 30B model in every role. Two configurations run on the
+same seeds can be compared fold by fold with `python -m src.pipeline.compare`; the planned comparisons are in
+[docs/ablation_plan.md](docs/ablation_plan.md) and `scripts/run_ablation_queue.ps1` runs them.
+
 `--negatives DIR [--max-negative-rate R] [--negatives-max-files N]` also grades the rule on
 real-world C code (e.g. a clone of a mature open-source project) that is assumed correct:
 the files are split into train/test by a hash of their path, every match is an alert, and a

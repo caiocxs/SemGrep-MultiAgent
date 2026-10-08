@@ -1,4 +1,4 @@
-# Findings so far (2026-10-06)
+# Findings so far (2026-10-07)
 
 Status of the evidence after the runs described in [experiments.md](experiments.md) and the changes in
 [changes.md](changes.md). Everything below is from one machine, local models, Semgrep OSS 1.178, Juliet CWE-416
@@ -23,9 +23,12 @@ code assumed correct. Rules are always written by the local models; the gate is 
 | D | final (template v2 + warning + `not` feedback), seed 0 | 0/5 | 85.7% +- 17.5% | 81.2% +- 25.8% | 3.83 +- 2.50 |
 | D | final, seed 1 | 0/5 | 71.4% +- 20.2% | 91.1% +- 20.0% | 2.40 +- 2.56 |
 | D | final, seed 2 | 0/5 | 71.7% +- 26.3% | 87.8% +- 18.9% | 2.67 +- 2.53 |
+| D | final, seed 3 | 0/5 | 94.9% +- 7.0% | 63.0% +- 28.4% | 3.56 +- 2.82 |
+| D | final, seed 4 | 0/5 | 55.2% +- 36.2% (one fold without a valid rule) | 95.0% +- 10.0% (4 folds) | 1.93 +- 0.32 (4 folds) |
 
-Mean of the three seed means of the final configuration (15 folds): recall 76.3%, precision 86.7%, 2.97 real-world
-alerts/KLOC. Only seed 2 is paired with another configuration (template v1 + warning, same folds and same real-world files):
+Pooled over the 25 folds of the final configuration (five seeds): recall 75.8% +- 25.6 (median 85.7%), precision 83.1% +- 23.1
+over the 24 folds that have a rule (median 100%), 2.92 +- 2.29 real-world alerts/KLOC (median 2.14), 14 of those 24 folds with
+0 Juliet false positives, 0 folds accepted. Only seed 2 is paired with another configuration (template v1 + warning, same folds and same real-world files):
 recall 71.7% against 69.5%, precision 87.8% against 87.4%, 2.67 against 2.78 alerts/KLOC, all within the spread over folds.
 Reference: the official Semgrep packs (`p/c`, `p/default`, `p/cwe-top-25`, `p/security-audit`) reach recall 0% on the seed-0
 random 30% test split of CWE-416 (not measured fold by fold). The other rows use different seeds, so different folds and
@@ -34,11 +37,11 @@ real-world files: they are not paired.
 ## Findings
 
 1. **A 30B local model, given a strategy (state change of a variable), writes rules that generalize across Juliet flow
-   variants** (mean recall 70-89% over folds), with mean precision 70-91%. The 4B model does not (mean recall 20%: one fold at
+   variants** (mean recall 76% over the 25 folds of the final configuration, between 55% and 95% by seed), with mean precision 83%. The 4B model does not (mean recall 20%: one fold at
    100% with 204 false positives, four with rules that match nothing). The single "first accepted rule" of 2026-09-29 (recall
    48.8%, precision 100%) is at the low end of what the same model produces (per-fold recall 44-100%).
 2. **No rule satisfies both gates.** Most rules with 0-6 Juliet false positives raised 1.0 or more alerts per KLOC on Git (median
-   about 2) against a limit of 0.1; two held-out folds were lower (0.37 and 0.105, both above the limit); the only rules under the limit (0.04 and 0.07 alerts/KLOC) had 266 and 354 Juliet false
+   about 2) against a limit of 0.1; two held-out folds were lower (0.37 and 0.105, both above the limit); the only rules under the limit (0.04, 0.07 and 0.009 alerts/KLOC) had 266, 354 and 156 Juliet false
    positives. One rule came close with no Juliet false positives (finding 8). The rule accepted on Juliet raises 2.1 and none of 40 sampled alerts was a real bug. Zero false positives on
    Juliet does not predict behaviour on real code.
 3. **The dominant defect is structural and the models can say it but not write it.** About 80% of the alerts of the best rules
@@ -47,17 +50,17 @@ real-world files: they are not paired.
    the pattern; the use is the argument inside the call). A hand-made probe with `pattern-not-inside: free(...)` cut the alerts
    from 2.21 to 0.40 per KLOC with the same recall and no new Juliet false positives.
 4. **Feedback that names the mistake changes what the model writes, but rarely enough.** With `not_inside` available and a message
-   saying that its `not` has no effect, the model wrote a `not_inside` in 46 of 112 attempts of the final configuration (three
-   seeds; 0 of 7 in the run before that message). Of the 31 attempts that reached the gate with a `not_inside` and detected
-   something, 30 used a pattern with the use's own metavariable (typically `free($P)`), which only excludes a use inside a `free` of the same variable
-   (real-world rate at best 1.04, median 2.37 alerts/KLOC); one wrote `free($X)` with a new metavariable (finding 8). The message
+   saying that its `not` has no effect, 76 of 189 attempts of the final configuration (five seeds, counting the single complete run and one
+   interrupted fold; 0 of 7 in the run before that message) reached the gate with a `not_inside`. Of the 56 of them that detected
+   something, 55 used a pattern with the use's own metavariable (typically `free($P)`), which only excludes a use inside a `free` of the same variable
+   (median 2.40 alerts/KLOC; the lowest, 0.05, is a rule with hundreds of Juliet false positives); one wrote `free($X)` with a new metavariable (finding 8). The message
    that would explain the metavariable was not added: it would be the rule itself.
 5. **The two kinds of false positive move independently.** Rules with recall 100% and hundreds of Juliet false positives raise
    0.0-0.1 alerts/KLOC on Git, and rules with 0 Juliet false positives raise 2 or more. A gate with only one of them accepts
    rules that the other rejects.
 6. **The rules are not better than chance at real fixes.** On 16 Git fix commits (use after free, double free), 5 had an alert
    within 10 lines of the fixed lines before the fix (31%), against 36% for any line with `free()` in those files.
-7. **Nothing was accepted by the gate that includes real-world code**: 0 of 30 folds over the six cross-validations of combo D
+7. **Nothing was accepted by the gate that includes real-world code**: 0 of 40 folds over the eight cross-validations of combos D
    and C with it, and the complete single runs. Every run with it used the template format, models C and D, CWE-416 (and
    CWE-415, recall 0% for both models). The earlier yaml and spec runs predate that gate and were not accepted either; the one
    rule accepted before it (template, D, 2026-09-29) fails it.
@@ -67,7 +70,8 @@ real-world files: they are not paired.
    positives, 38 real-world alerts (0.138/KLOC), none on a source line; not accepted because 0.138 is above 0.1. On the
    held-out test: recall 57.1%, precision 100%, 0 false positives, 13 real-world alerts (0.105/KLOC), also just above the limit.
    It is the model's own output (neither the form nor the metavariable was given), it is one attempt in 31, and its recall is
-   half of the cases; it shows that the pipeline can reach the neighbourhood of the limit, not that it passes it.
+   half of the cases; it shows that the pipeline can reach the neighbourhood of the limit, not that it passes it. It did not
+   reappear in the ten folds of seeds 3 and 4.
 9. **Even that rule raises no true alert.** All 51 of its alerts on Git (38 train, 13 test) were read one by one: 0 are a use after
    free. 12 are loops that move to another element, 11 reassignments by macros, 9 array slots overwritten, 8 a different
    object, 6 out-parameter reassignments, 2 unreachable paths, 1 reassigned in place, 1 verified harmless and 1 borderline benign (a
@@ -78,7 +82,7 @@ real-world files: they are not paired.
 ## Threats to validity and limits
 
 - **One CWE with enough data (416), 20 variants, 4-6 per test group;** CWE-415 is a negative result with a template made for 416.
-- **Seeds:** three seeds (0, 1, 2) of the final configuration, one seed for each of the others. Spread over folds
+- **Seeds:** five seeds (0 to 4) of the final configuration, one seed for each of the others. Spread over folds
   (+-18 to +-45 points of recall) is large; differences of a few points between configurations are not conclusions.
 - **Template arm:** the strategy (event, uses, resets as taint by side effect) was written by us; it is the knowledge being
   tested and the results must be reported apart from the yaml/spec arms. Template v2, the source-line warning and the `not`
@@ -91,11 +95,11 @@ real-world files: they are not paired.
 - **Juliet recall** counts a match anywhere in a BAD file of a case as a detection, so it can overstate detection of cases split
   across files (variants 63/64).
 - **Models and machine:** 4B and 30B (IQ4_XS, partial GPU offload) on a GTX 1060; the 30B runs depend on free RAM (runs were
-  stopped by the system three times, the last two seeds ran to the end from the user's own terminal session); no other model families were tried; one run of each model call is deterministic
+  stopped by the system three times; later seeds completed when enough RAM was free); no other model families were tried; one run of each model call is deterministic
   (temperature 0) except where `--samples` was used.
 
 ## Not done
 
-Critic and merge agents; the other CWEs (401, 457, 476); a second model family; CVE-fix evaluation beyond the 16 Git commits;
-interprocedural flows (Semgrep OSS); the 4B model (combo C) with the final configuration; more seeds
-(`scripts/run_crossval_seeds.ps1 -Seeds 3,4,5` runs them).
+Evaluation of the critic, merger, history and example-mode options (implemented, with a plan in `docs/ablation_plan.md`;
+the documentation ablation is running); the other CWEs (401, 457, 476); a second model family; CVE-fix evaluation beyond the 16 Git commits;
+interprocedural flows (Semgrep OSS); the 4B model (combo C) with the final configuration.

@@ -753,3 +753,36 @@ classified by line type, so the larger, noisier rules were not read alert by ale
 
 The review covers the alerts the rules **raise** (false positives). It says nothing about what they **miss** (false negatives);
 that is measured only on Juliet and on the 16 fix commits.
+
+## Combo D, final configuration, cross-validation seeds 3 and 4 (2026-10-07)
+
+`scripts/run_crossval_seeds.ps1 -Seeds 3,4` (combo D, same options as seeds 1 and 2). Summaries
+`logs/crossval/D/CWE-416/20261007-195027.json` (seed 3) and `20261007-204711.json` (seed 4). Both completed.
+
+| Seed | Fold | Test variants | Test recall | Test precision | Test FP | Real-world alerts/KLOC |
+|---|---|---|---|---|---|---|
+| 3 | 0 | 09, 12, 14, 17 | 100% | 25.0% | 156 | 0.009 |
+| 3 | 1 | 03, 04, 05, 11 | 100% | 53.8% | 48 | 6.36 |
+| 3 | 2 | 07, 13, 18, 64 | 88.9% | 80.0% | 6 | 2.33 |
+| 3 | 3 | 01, 06, 10, 63 | 100% | 56.3% | 42 | 6.53 |
+| 3 | 4 | 02, 08, 15, 16 | 85.7% | 100% | 0 | 2.58 |
+| 4 | 0 | 07, 16, 18, 63 | 44.4% | 100% | 0 | 1.57 |
+| 4 | 1 | 01, 13, 17, 64 | 88.9% | 80.0% | 6 | 1.77 |
+| 4 | 2 | 04, 11, 12, 14 | 85.7% | 100% | 0 | 2.24 |
+| 4 | 3 | 02, 05, 10, 15 | 57.1% | 100% | 0 | 2.15 |
+| 4 | 4 | 03, 06, 08, 09 | 0% (no valid rule) | - | - | - |
+
+Seed 3: accepted 0/5, recall 94.9% +- 7.0%, precision 63.0% +- 28.4%, real-world 3.56 +- 2.82 alerts/KLOC. Seed 4: accepted 0/5, recall
+55.2% +- 36.2% (the fold without a valid rule counts as 0), precision 95.0% +- 10.0% and 1.93 +- 0.32 alerts/KLOC over the 4 folds with a rule.
+
+Seed 3, fold 0 is the broad kind of rule: 0.009 alerts/KLOC on Git with 156 Juliet false positives, so it is far under the limit
+without being acceptable. The near-miss of seed 1 (0.105 alerts/KLOC, 0 Juliet false positives) did not reappear in these ten folds.
+
+**Pooled over the 25 folds of the final configuration** (seeds 0 to 4): 0 accepted; recall 75.8% +- 25.6 (median 85.7%, range 0-100%);
+precision 83.1% +- 23.1 over 24 folds (median 100%); real-world 2.92 +- 2.29 alerts/KLOC (median 2.14); 14 of 24 folds with 0 Juliet
+false positives, and among those 14 (recall above 0) the median real-world rate is 1.88 alerts/KLOC. Three folds are under 0.5
+alerts/KLOC: seed 1 fold 2 (0.105, 0 false positives), seed 2 fold 1 (0.37, 0 false positives) and seed 3 fold 0 (0.009, 156 false positives).
+
+**Use of `not_inside`, five seeds** (189 attempts, which include the single complete run and one interrupted fold): 76 reached the gate
+with a `not_inside`; the ineffective-`not` feedback was shown in 53 reports. Of the 56 with recall above 0, 55 use the use's own
+metavariable (median 2.40 alerts/KLOC) and one a new one (seed 1, fold 2, attempt 6: 0.138).
