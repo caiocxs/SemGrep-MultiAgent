@@ -18,6 +18,7 @@
     .\scripts\run_crossval_seeds.ps1 -Combo C -MinFreeGB 6 # the small model needs far less RAM
     .\scripts\run_crossval_seeds.ps1 -NoDocs               # prompts without the Semgrep documentation (ablation)
     .\scripts\run_crossval_seeds.ps1 -Combo E -Tag critic -Extra "--critic"   # another option of crossval, tagged in the log name
+    .\scripts\run_crossval_seeds.ps1 -NoDocs -ResumeSince 20261007-230000   # continue an interrupted run: finished folds are reused
     .\scripts\run_crossval_seeds.ps1 -DryRun               # only prints what it would run
 
 .NOTES
@@ -34,6 +35,7 @@ param(
     [string]$Negatives = "../git",
     [double]$MinFreeGB = 20,
     [switch]$NoDocs,
+    [string]$ResumeSince = "",
     [string[]]$Extra = @(),
     [string]$Tag = "",
     [switch]$Force,
@@ -86,6 +88,7 @@ foreach ($seed in $seedList) {
         "--format", $Format, "--max-fix-attempts", $MaxFixAttempts, "--negatives", $Negatives)
     if ($NoDocs) { $cmdArgs += "--no-docs" }
     if ($Extra.Count -gt 0) { $cmdArgs += $Extra }
+    if ($ResumeSince) { $cmdArgs += @("--resume-since", $ResumeSince) }  # reuse the folds an interrupted run already finished
 
     Write-Host ""
     Write-Host "=== seed $seed ($(Get-Date -Format 'HH:mm:ss')) -> $log"

@@ -24,6 +24,7 @@ param(
     [string[]]$Seeds = @("1", "2"),
     [double]$MinFreeGB = 20,
     [int]$MaxWaitMinutes = 120,
+    [string]$ResumeSince = "",
     [switch]$DryRun
 )
 
@@ -65,6 +66,9 @@ function Wait-ForRam([double]$need, [int]$maxMinutes) {
     }
 }
 
+$resume = @{}
+if ($ResumeSince) { $resume = @{ ResumeSince = $ResumeSince } }  # folds finished by an interrupted run are reused
+
 $results = @()
 foreach ($name in $names) {
     $e = $experiments[$name]
@@ -72,7 +76,7 @@ foreach ($name in $names) {
     $need = if ($e.ContainsKey("Ram")) { $e.Ram } else { $MinFreeGB }  # the small models need far less RAM
     Write-Host "##### $name (combo $($e.Combo), seeds $($seedList -join ','), options $($e.Extra -join ' ')) at $(Get-Date -Format 'HH:mm:ss')"
     if ($DryRun) {
-        & .\scripts\run_crossval_seeds.ps1 -Seeds $seedList -Combo $e.Combo -Tag $name -Extra $e.Extra -DryRun
+        & .\scripts\run_crossval_seeds.ps1 -Seeds $seedList -Combo $e.Combo -Tag $name -Extra $e.Extra @resume -DryRun
         $results += [pscustomobject]@{ Experiment = $name; Result = "dry run" }
         continue
     }
@@ -82,7 +86,7 @@ foreach ($name in $names) {
         continue
     }
     try {
-        & .\scripts\run_crossval_seeds.ps1 -Seeds $seedList -Combo $e.Combo -Tag $name -Extra $e.Extra -MinFreeGB $need
+        & .\scripts\run_crossval_seeds.ps1 -Seeds $seedList -Combo $e.Combo -Tag $name -Extra $e.Extra -MinFreeGB $need @resume
         $results += [pscustomobject]@{ Experiment = $name; Result = "done" }
     } catch {
         Write-Host "  failed: $($_.Exception.Message)"

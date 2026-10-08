@@ -332,6 +332,8 @@ contribution can be measured instead of replaced by hand-written aids. All optio
 | 37 | `scripts/run_ablation_queue.ps1`: runs the planned comparisons one after another, waiting for free RAM before each | `scripts/` |
 | 38 | `compare --baseline ... --grouped DIR...`: every summary found under the folders is labelled by the options and the model it recorded (no docs, history, critic, merge, example mode, no diagnosis, model of another combo) and each group is compared with the baseline on the seeds they share. Summaries written before the options were recorded are skipped | `compare.py` |
 | 39 | Combo F: Phi-4-mini in every role, to test a second model family in the same size class as the 4B; `qwen4b` and `phi4` are in the queue with their own (small) RAM requirement | `configs/combos/combo_f.toml`, `scripts/run_ablation_queue.ps1` |
+| 40 | `crossval --resume-since STAMP` (and `-ResumeSince` in the scripts): the folds an interrupted cross-validation already finished are reused instead of run again. A fold is reused only if its run log has the same CWE, combo, seed, format, options and real-world code and is not older than the stamp; the latest log of a fold wins; the model is loaded only if some fold is left. The options the log does not record (fixes per rule, minimum recall, number of examples) are not checked. Added because the system stopped several 50-minute runs for low memory | `crossval.py` |
+| 41 | `scripts/export_results.py`: copies the cross-validation summaries to the versioned `results/crossval/` | `scripts/` |
 
 Notes to declare:
 - Critic, merger and history are LLM agents; their output only changes the prompt of the next attempt, and every rule still goes
@@ -339,5 +341,4 @@ Notes to declare:
 - The pre-registered analysis (hypotheses, metrics, what counts as an effect) is in `docs/ablation_plan.md`; it was written before the
   results of these comparisons.
 - Tests: `tests/test_roles.py` (21, with a fake model and a fake gate, no Semgrep), `tests/test_compare.py` (8), a prompt test per
-  format for `--no-docs`. The suite with Semgrep (111 tests, before `test_compare.py`) passed on 2026-10-07 after the refactor of the
-  loop; the 8 comparison tests pass on their own.
+  format for `--no-docs`. The full suite (141 tests, with Semgrep) passed on 2026-10-08.

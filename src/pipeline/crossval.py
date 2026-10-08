@@ -86,19 +86,78 @@ def format_table(summary):
     return "\n".join(lines)
 
 
+DEFAULT_ROLES = {"history": False, "critic": False, "merge": False, "example_mode": "findings", "diagnose": True}
+
+
+def _expected(kwargs):
+    """What a finished fold must have been run with to be reused: the options its run log records."""
+    return {
+        "format": kwargs.get("output_format", "yaml"),
+        "seed": kwargs.get("seed", 0),
+        "docs": kwargs.get("docs", True),
+        "roles": {k: kwargs.get(k, default) for k, default in DEFAULT_ROLES.items()},
+        "negatives": str(kwargs["negatives"]) if kwargs.get("negatives") else None,
+    }
+
+
+def _matches(run, cwe, combo, folds, expected):
+    negatives = (run.get("negatives") or {}).get("root")
+    return (run.get("cwe") == cwe and run.get("combo") == combo and run.get("folds") == folds
+            and run.get("fold") is not None and run.get("format") == expected["format"]
+            and run.get("seed") == expected["seed"] and run.get("docs", True) == expected["docs"]
+            and run.get("roles", DEFAULT_ROLES) == expected["roles"] and negatives == expected["negatives"])
+
+
+def find_finished_folds(logs_dir, combo, cwe, folds, since, kwargs):
+    """
+    {fold: run log} of the folds already finished by an interrupted cross-validation: run logs of `synthesize` (written only when a
+    run ends) with the same CWE, combo, seed, format, options and real-world code, whose run id is not older than `since`
+    (YYYYMMDD-HHMMSS). The latest one wins when a fold was run more than once. The options the log does not record (fixes per
+    rule, minimum recall, number of examples) are not checked: use the same ones as in the interrupted run.
+    """
+    expected = _expected(kwargs)
+    found = {}
+    for path in sorted((Path(logs_dir) / combo / cwe).glob("*.json")):
+        try:
+            run = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(run, dict) or str(run.get("run_id", "")) < since:
+            continue
+        if _matches(run, cwe, combo, folds, expected):
+            best = found.get(run["fold"])
+            if best is None or run["run_id"] > best["run_id"]:
+                found[run["fold"]] = run
+    return found
+
+
 def run_folds(cwe, combo_name, folds, complete=None, rules_dir=Path("rules/crossval"),
-              logs_dir=Path("logs/synthesis"), crossval_dir=Path("logs/crossval"), **kwargs):
-    """Runs `synthesize` once per fold (kwargs go to it) and returns the summary; also written to disk."""
-    if complete is None:
-        from src.pipeline.llm import LocalLLM
-        complete = LocalLLM(load_combo(combo_name)).complete  # one model load for all folds
+              logs_dir=Path("logs/synthesis"), crossval_dir=Path("logs/crossval"), resume_since=None, **kwargs):
+    """
+    Runs `synthesize` once per fold (kwargs go to it) and returns the summary; also written to disk. With `resume_since` the folds
+    that an interrupted run already finished (see `find_finished_folds`) are reused, and the model is loaded only if one is left.
+    """
+    done = find_finished_folds(logs_dir, combo_name, cwe, folds, resume_since, kwargs) if resume_since else {}
+
+    def model():
+        nonlocal complete
+        if complete is None:
+            from src.pipeline.llm import LocalLLM
+            complete = LocalLLM(load_combo(combo_name)).complete  # one model load for all folds
+        return complete
+
     stamp = time.strftime("%Y%m%d-%H%M%S")
     runs = []
     for fold in range(folds):
+        if fold in done:
+            print(f"\n=== fold {fold + 1}/{folds}: reused from run {done[fold]['run_id']} ===")
+            runs.append(done[fold])
+            continue
         print(f"\n=== fold {fold + 1}/{folds} ===")
-        runs.append(synthesize(cwe, combo_name, complete=complete, fold=fold, folds=folds,
+        runs.append(synthesize(cwe, combo_name, complete=model(), fold=fold, folds=folds,
                                rules_dir=Path(rules_dir) / stamp / f"fold{fold}", logs_dir=logs_dir, **kwargs))
     summary = summarize(runs)
+    summary["reused_folds"] = sorted(done)
     summary.update(cwe=cwe, combo=combo_name, run=stamp, seed=kwargs.get("seed", 0),
                    format=kwargs.get("output_format", "yaml"), negatives=kwargs.get("negatives"),
                    docs=kwargs.get("docs", True),
@@ -135,10 +194,12 @@ def main():
     parser.add_argument("--merge", action="store_true")
     parser.add_argument("--example-mode", choices=("findings", "pairs", "none"), default="findings")
     parser.add_argument("--no-diagnosis", action="store_true")
+    parser.add_argument("--resume-since", default=None, metavar="YYYYMMDD-HHMMSS",
+                        help="Reuse the folds an interrupted run already finished (same combo, seed, options; run id not older than this)")
     args = parser.parse_args()
 
     run_folds(
-        args.cwe, args.combo, args.folds,
+        args.cwe, args.combo, args.folds, resume_since=args.resume_since,
         bad_files=collect_files(args.bad), good_files=collect_files(args.good), log_dirs=args.logs,
         n_examples=args.examples, min_recall=args.min_recall, seed=args.seed,
         max_fix_attempts=args.max_fix_attempts, output_format=args.format,

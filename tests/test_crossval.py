@@ -1,3 +1,4 @@
+import json
 import shutil
 from pathlib import Path
 
@@ -115,3 +116,110 @@ def test_folds_without_a_fold_number_is_an_error(monkeypatch):
 
     with pytest.raises(ValueError, match="fold is required"):
         synthesize("CWE-416", "A", collect_files([FIXTURES / "bad"]), [], [], complete=lambda r, p: ("", 0.0), folds=3)
+
+
+# ----------------------------------------------------------------------------- resuming an interrupted cross-validation
+from src.pipeline import crossval as crossval_module
+
+OPTIONS = dict(output_format="template", seed=1, negatives="../git")
+
+
+def finished_fold(run_id, fold, **override):
+    """The run log `synthesize` writes when a fold ends, with the fields that decide whether it can be reused."""
+    run = run_log(fold, 0.5, 0.9, tp=3, fp=1)
+    run.update(run_id=run_id, cwe="CWE-416", combo="D", seed=1, folds=5, format="template", docs=True,
+               roles={"history": False, "critic": False, "merge": False, "example_mode": "findings", "diagnose": True},
+               negatives={"root": "../git", "train_files": 446, "test_files": 198, "max_rate": 0.1})
+    run.update(override)
+    return run
+
+
+def write_runs(tmp_path, runs):
+    folder = tmp_path / "synthesis" / "D" / "CWE-416"
+    folder.mkdir(parents=True)
+    for run in runs:
+        (folder / f"{run['run_id']}.json").write_text(json.dumps(run), encoding="utf-8")
+    (folder / "broken.json").write_text("{", encoding="utf-8")
+    (folder / "list.json").write_text("[1]", encoding="utf-8")
+    return tmp_path / "synthesis"
+
+
+def test_only_runs_with_the_same_configuration_that_are_new_enough_are_reused(tmp_path):
+    logs = write_runs(tmp_path, [
+        finished_fold("20261007-100000", 0),
+        finished_fold("20261007-100100", 1),
+        finished_fold("20261007-080000", 2),                                    # older than the interrupted run
+        finished_fold("20261007-100200", 3, seed=2),                            # another seed
+        finished_fold("20261007-100300", 4, docs=False),                        # another option
+        finished_fold("20261007-100400", 0, roles={"history": True, "critic": False, "merge": False,
+                                                    "example_mode": "findings", "diagnose": True}),
+        finished_fold("20261007-100500", 1, negatives={"root": "../other"}),    # other real-world code
+        finished_fold("20261007-100600", 2, folds=4),                           # another number of folds
+        finished_fold("20261007-100700", 3, format="yaml"),
+    ])
+    found = crossval_module.find_finished_folds(logs, "D", "CWE-416", 5, "20261007-090000", OPTIONS)
+
+    assert sorted(found) == [0, 1] and found[0]["run_id"] == "20261007-100000" and found[1]["run_id"] == "20261007-100100"
+
+
+def test_the_latest_run_of_a_fold_wins(tmp_path):
+    logs = write_runs(tmp_path, [finished_fold("20261007-100000", 2), finished_fold("20261007-110000", 2)])
+    found = crossval_module.find_finished_folds(logs, "D", "CWE-416", 5, "20261007-000000", OPTIONS)
+
+    assert found[2]["run_id"] == "20261007-110000"
+
+
+def test_a_log_from_before_the_options_were_recorded_counts_as_the_defaults(tmp_path):
+    legacy = finished_fold("20261007-100000", 0)
+    del legacy["roles"], legacy["docs"]
+    logs = write_runs(tmp_path, [legacy])
+
+    assert sorted(crossval_module.find_finished_folds(logs, "D", "CWE-416", 5, "20261007-000000", OPTIONS)) == [0]
+    assert crossval_module.find_finished_folds(logs, "D", "CWE-416", 5, "20261007-000000", dict(OPTIONS, docs=False)) == {}
+
+
+def fake_synthesize(calls):
+    def synthesize(cwe, combo, complete=None, fold=None, folds=None, **kwargs):
+        calls.append(fold)
+        return finished_fold(f"2026100{8}-0000{fold}", fold)
+    return synthesize
+
+
+def test_a_resumed_run_only_runs_the_folds_that_are_missing(tmp_path, monkeypatch):
+    logs = write_runs(tmp_path, [finished_fold("20261007-100000", 0), finished_fold("20261007-100100", 1),
+                                 finished_fold("20261007-100300", 3)])
+    calls = []
+    monkeypatch.setattr(crossval_module, "synthesize", fake_synthesize(calls))
+
+    summary = run_folds("CWE-416", "D", 5, complete=lambda role, prompt: ("", 0.0), logs_dir=logs, rules_dir=tmp_path / "rules",
+                        crossval_dir=tmp_path / "crossval", resume_since="20261007-000000", **OPTIONS)
+
+    assert calls == [2, 4]
+    assert [f["fold"] for f in summary["folds"]] == [0, 1, 2, 3, 4] and summary["reused_folds"] == [0, 1, 3]
+    assert len(list((tmp_path / "crossval").rglob("*.json"))) == 1
+
+
+def test_nothing_is_reused_without_resume_since(tmp_path, monkeypatch):
+    logs = write_runs(tmp_path, [finished_fold("20261007-100000", 0)])
+    calls = []
+    monkeypatch.setattr(crossval_module, "synthesize", fake_synthesize(calls))
+
+    summary = run_folds("CWE-416", "D", 5, complete=lambda role, prompt: ("", 0.0), logs_dir=logs, rules_dir=tmp_path / "rules",
+                        crossval_dir=tmp_path / "crossval", **OPTIONS)
+
+    assert calls == [0, 1, 2, 3, 4] and summary["reused_folds"] == []
+
+
+def test_the_model_is_not_loaded_when_every_fold_is_already_finished(tmp_path, monkeypatch):
+    logs = write_runs(tmp_path, [finished_fold(f"20261007-10000{i}", i) for i in range(5)])
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the model must not be loaded")
+
+    monkeypatch.setattr(crossval_module, "synthesize", forbidden)
+    monkeypatch.setattr("src.pipeline.llm.LocalLLM", forbidden)
+
+    summary = run_folds("CWE-416", "D", 5, logs_dir=logs, rules_dir=tmp_path / "rules", crossval_dir=tmp_path / "crossval",
+                        resume_since="20261007-000000", **OPTIONS)
+
+    assert summary["reused_folds"] == [0, 1, 2, 3, 4]
