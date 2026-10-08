@@ -78,6 +78,11 @@ real-world files: they are not paired.
    pointer compared after `free`). Reasons and locations are in `docs/alert_review_seed1_fold2_attempt6.csv`. Getting under the alert limit
    does not make the alerts correct: the real-world gate measures noise, not precision, and a rule can pass it by matching
    less of the same kind of code.
+10. **The Semgrep documentation in the prompt makes no detectable difference.** Leaving out the pattern-syntax section (1,278 characters in
+   the template format) changed recall by +0.024 (95% interval -0.10 to +0.16) and precision by -0.07 over 10 paired folds. The
+   real-world alert rate was lower without it in 7 of 10 folds (-0.88 alerts/KLOC, interval -2.8 to +1.0), partly through broad rules
+   with more Juliet false positives; by the pre-registered criterion that is not an effect, and it would have to be re-run on other
+   seeds. The template prompt already carries the strategy, so the documentation adds little.
 
 ## Threats to validity and limits
 
@@ -101,5 +106,5 @@ real-world files: they are not paired.
 ## Not done
 
 Evaluation of the critic, merger, history and example-mode options (implemented, with a plan in `docs/ablation_plan.md`;
-the documentation ablation is running); the other CWEs (401, 457, 476); a second model family; CVE-fix evaluation beyond the 16 Git commits;
+the documentation ablation is done, the rest is pending); the other CWEs (401, 457, 476); a second model family; CVE-fix evaluation beyond the 16 Git commits;
 interprocedural flows (Semgrep OSS); the 4B model (combo C) with the final configuration.

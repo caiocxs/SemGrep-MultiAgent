@@ -817,3 +817,35 @@ configuration with 0 false positives and high recall, five times the limit; one 
 
 Limit of this result: 5 paired folds from one seed, and a spread over folds that is larger than the differences one would care about
 (recall +-0.2); a null result here means "not detected", not "no effect". The remaining 5 folds of the plan (seed 2) were not run.
+
+### `nodocs` completed: 10 paired folds (2026-10-08)
+
+Seed 2 was finished with `-ResumeSince` (fold 0 reused from the interrupted run, folds 1 to 4 run; no stop this time). Summary
+`results/crossval/D/CWE-416/20261008-200024.json`: accepted 0/5, recall 75.2% +- 23.4, precision 80.6% +- 33.4, real-world 0.78 +- 0.60
+alerts/KLOC (with the documentation, same seed: 2.67 +- 2.53).
+
+Paired on seeds 1 and 2 (10 folds, same folds and real-world files as the final configuration with documentation),
+`python -m src.pipeline.compare`:
+
+| Metric | with docs | no docs | no docs - with docs | 95% interval | no docs better / worse (folds) |
+|---|---|---|---|---|---|
+| recall | 0.716 | 0.740 | +0.024 | -0.101 to +0.164 | 2 / 4 |
+| precision | 0.894 | 0.827 | -0.068 | -0.272 to +0.105 | 2 / 3 |
+| Juliet false positives | 9.0 | 23.6 | +14.6 | -13.2 to +54.0 | 2 / 2 |
+| real-world alerts/KLOC | 2.533 | 1.649 | -0.883 | -2.774 to +1.021 | 7 / 1 (2 ties) |
+| accepted folds | 0 | 0 | 0 | - | - |
+
+By the criterion of `ablation_plan.md` **no effect was detected**: every interval includes 0. The alert rate is the one metric that goes
+the same way in most folds (lower without documentation in 7 of 10; -0.88 alerts/KLOC, 35% of the baseline, above the plan's 25% size
+but with an interval that includes 0). It is an exploratory signal, and part of it comes from broad rules: in seed 2 fold 1 the
+alerts fall from 0.37 to 0.05 per KLOC while the Juliet false positives go from 0 to 176 (the two kinds of false positive move
+independently, finding 5). Four other folds of seed 2 do fall without that: 7.02 to 0.48, 1.93 to 1.67, 2.13 to 1.01 and 1.90 to 0.71.
+Per the plan, an effect is re-run on seeds 0, 3 and 4 before it is written as a finding; this one was not.
+
+Seed 2 fold 0 without documentation (variants 06, 08, 15, 16) is the rule noted above: recall 85.7%, precision 100%, 0 Juliet false
+positives, 0.48 alerts/KLOC, five times the limit. The near-miss of seed 1 (0.105) did not reappear in any `nodocs` fold.
+
+Reading: the 1,278 characters of pattern syntax in the prompt are not what decides the result, which agrees with the expectation of
+the plan; the trajectory of a deterministic run changes with any change of the prompt, so single folds can move a lot in both
+directions without that being an effect of the documentation. A null result on 10 folds means "not detected" (recall spread over
+folds is about 0.2).

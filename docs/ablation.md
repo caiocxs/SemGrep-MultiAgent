@@ -181,7 +181,7 @@ On seed 2, the only seed with two 30B configurations on the same folds: v1 + war
 
 | Experiment | Change | Status |
 |---|---|---|
-| `nodocs` | no Semgrep documentation in the prompts | seed 1 done: no difference detected (recall +0.013, interval -0.17 to +0.24; 5 folds); seed 2 stopped at 1 of 5 folds (memory) |
+| `nodocs` | no Semgrep documentation in the prompts | done, 10 paired folds: no effect by the plan's criterion (recall +0.024, interval -0.10 to +0.16); alerts/KLOC -0.88 in 7 of 10 folds, exploratory (interval -2.8 to +1.0) |
 | `history` | the corrector sees the earlier attempts | not run |
 | `nodiag` | structural diagnoses of the gate off | not run |
 | `critic` | a critic agent reviews each tested rule | not run |
