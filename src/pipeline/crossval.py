@@ -100,7 +100,11 @@ def run_folds(cwe, combo_name, folds, complete=None, rules_dir=Path("rules/cross
                                rules_dir=Path(rules_dir) / stamp / f"fold{fold}", logs_dir=logs_dir, **kwargs))
     summary = summarize(runs)
     summary.update(cwe=cwe, combo=combo_name, run=stamp, seed=kwargs.get("seed", 0),
-                   format=kwargs.get("output_format", "yaml"), negatives=kwargs.get("negatives"))
+                   format=kwargs.get("output_format", "yaml"), negatives=kwargs.get("negatives"),
+                   docs=kwargs.get("docs", True),
+                   roles={k: kwargs.get(k, default) for k, default in (
+                       ("history", False), ("critic", False), ("merge", False),
+                       ("example_mode", "findings"), ("diagnose", True))})
     out = Path(crossval_dir) / combo_name / cwe / f"{stamp}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(summary, indent=4, ensure_ascii=False), encoding="utf-8")
@@ -125,6 +129,12 @@ def main():
     parser.add_argument("--negatives", default=None)
     parser.add_argument("--max-negative-rate", type=float, default=0.1)
     parser.add_argument("--negatives-max-files", type=int, default=None)
+    parser.add_argument("--no-docs", action="store_true", help="Leave the Semgrep documentation out of the prompts")
+    parser.add_argument("--history", action="store_true")
+    parser.add_argument("--critic", action="store_true")
+    parser.add_argument("--merge", action="store_true")
+    parser.add_argument("--example-mode", choices=("findings", "pairs", "none"), default="findings")
+    parser.add_argument("--no-diagnosis", action="store_true")
     args = parser.parse_args()
 
     run_folds(
@@ -133,7 +143,8 @@ def main():
         n_examples=args.examples, min_recall=args.min_recall, seed=args.seed,
         max_fix_attempts=args.max_fix_attempts, output_format=args.format,
         negatives=args.negatives, max_negative_rate=args.max_negative_rate,
-        max_negative_files=args.negatives_max_files,
+        max_negative_files=args.negatives_max_files, docs=not args.no_docs, history=args.history,
+        critic=args.critic, merge=args.merge, example_mode=args.example_mode, diagnose=not args.no_diagnosis,
     )
 
 

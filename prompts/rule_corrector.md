@@ -20,6 +20,7 @@ It was tested against vulnerable and safe C code and failed. Fix it.
 
 {{FEEDBACK}}
 
+{{HISTORY}}
 ### Vulnerable code the rule does not detect
 
 {{MISSED_CODE}}

@@ -44,6 +44,7 @@ You write only the patterns. The program builds the Semgrep rule from them.
 
 {{FEEDBACK}}
 
+{{HISTORY}}
 ### Vulnerable code the rule does not detect
 
 {{MISSED_CODE}}

@@ -28,6 +28,7 @@ Spec keys: `message`, and exactly one of `search` (`pattern` or `either`; option
 
 {{FEEDBACK}}
 
+{{HISTORY}}
 ### Vulnerable code the rule does not detect
 
 {{MISSED_CODE}}

@@ -16,6 +16,8 @@
     .\scripts\run_crossval_seeds.ps1                       # seeds 1 and 2, combo D, CWE-416
     .\scripts\run_crossval_seeds.ps1 -Seeds 3,4,5          # other seeds
     .\scripts\run_crossval_seeds.ps1 -Combo C -MinFreeGB 6 # the small model needs far less RAM
+    .\scripts\run_crossval_seeds.ps1 -NoDocs               # prompts without the Semgrep documentation (ablation)
+    .\scripts\run_crossval_seeds.ps1 -Combo E -Tag critic -Extra "--critic"   # another option of crossval, tagged in the log name
     .\scripts\run_crossval_seeds.ps1 -DryRun               # only prints what it would run
 
 .NOTES
@@ -31,6 +33,9 @@ param(
     [int]$MaxFixAttempts = 6,
     [string]$Negatives = "../git",
     [double]$MinFreeGB = 20,
+    [switch]$NoDocs,
+    [string[]]$Extra = @(),
+    [string]$Tag = "",
     [switch]$Force,
     [switch]$DryRun
 )
@@ -73,10 +78,13 @@ $results = @()
 
 # --- one cross-validation per seed ------------------------------------------
 foreach ($seed in $seedList) {
-    $log = "logs\runs\crossval_${Combo}_${Cwe}_seed${seed}_${stamp}.log"
+    $tag = $(if ($NoDocs) { "_nodocs" } else { "" }) + $(if ($Tag) { "_$Tag" } else { "" })
+    $log = "logs\runs\crossval_${Combo}_${Cwe}${tag}_seed${seed}_${stamp}.log"
     $cmdArgs = @("-u", "-m", "src.pipeline.crossval",
         "--combo", $Combo, "--cwe", $Cwe, "--folds", $Folds, "--seed", $seed,
         "--format", $Format, "--max-fix-attempts", $MaxFixAttempts, "--negatives", $Negatives)
+    if ($NoDocs) { $cmdArgs += "--no-docs" }
+    if ($Extra.Count -gt 0) { $cmdArgs += $Extra }
 
     Write-Host ""
     Write-Host "=== seed $seed ($(Get-Date -Format 'HH:mm:ss')) -> $log"

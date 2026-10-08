@@ -418,11 +418,14 @@ def _line_text(path, line, cache):
     return lines[line - 1].strip() if 1 <= line <= len(lines) else ""
 
 
-def evaluate(rule_path, bad_files, good_files=(), timeout=600, negative_files=(), max_negative_rate=None):
+def evaluate(rule_path, bad_files, good_files=(), timeout=600, negative_files=(), max_negative_rate=None,
+             diagnose=True):
     """
     Runs rule_path over the BAD and GOOD files and grades every match. Matches
     in `negative_files` (real-world code assumed correct) are collected apart;
-    `max_negative_rate` is the number of such alerts per KLOC a passing rule may raise.
+    `max_negative_rate` is the number of such alerts per KLOC a passing rule may raise. `diagnose=False`
+    skips the two structural diagnoses of those alerts (on a source line; a useless `not`), to measure
+    them against a critic agent.
     """
     bad_files = [str(p) for p in bad_files]
     good_files = [str(p) for p in good_files]
@@ -475,9 +478,10 @@ def evaluate(rule_path, bad_files, good_files=(), timeout=600, negative_files=()
 
     for matches in (report.true_positives, report.false_positives, report.neutral, report.negative_matches):
         matches.sort(key=lambda m: (m.path, m.line))
-    report.negative_on_source = _alerts_on_source_lines(rule_path, report.negative_matches, timeout=timeout)
-    if report.negative_on_source:
-        report.ineffective_nots = _sink_nots_equal_to_sources(rule_path)
+    if diagnose:
+        report.negative_on_source = _alerts_on_source_lines(rule_path, report.negative_matches, timeout=timeout)
+        if report.negative_on_source:
+            report.ineffective_nots = _sink_nots_equal_to_sources(rule_path)
     return report
 
 

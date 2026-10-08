@@ -1,0 +1,47 @@
+# Combo E - "one big model in every role".
+# Same as Combo D, but the critic and the merger are the same Qwen3-Coder-30B-A3B as the generator and the
+# corrector, with identical load settings, so switching role never reloads the model (the 30B takes 45-125 s to
+# load; combo D's Phi-4-mini critic would make every critic call swap models). Used for the experiments on the
+# critic and merger roles; the detector is not used by the synthesis (its findings are read from logs).
+
+name = "E"
+description = "Qwen2.5-Coder-3B detects; Qwen3-Coder-30B-A3B generates, corrects, criticizes and merges (no model swaps)"
+target_gpu = "GTX 1060 6GB + 20 GB RAM"
+
+[defaults]
+n_gpu_layers = -1
+temperature = 0.0
+
+[loop]
+max_fix_attempts = 3
+
+[roles.detector]
+model = "qwen_coder_3b_q6"
+n_ctx = 16384
+max_tokens = 4096
+
+[roles.generator]
+model = "qwen3_coder_30b_a3b_iq4"
+n_ctx = 8192
+n_gpu_layers = 10   # of 48; raise until VRAM (~5 GB usable) is nearly full
+max_tokens = 2048
+
+[roles.corrector]
+model = "qwen3_coder_30b_a3b_iq4"
+n_ctx = 8192
+n_gpu_layers = 10
+max_tokens = 2048
+temperature = 0.2
+
+[roles.critic]
+model = "qwen3_coder_30b_a3b_iq4"
+n_ctx = 8192
+n_gpu_layers = 10
+max_tokens = 1024
+
+[roles.merger]
+model = "qwen3_coder_30b_a3b_iq4"
+n_ctx = 8192
+n_gpu_layers = 10
+max_tokens = 2048
+temperature = 0.2

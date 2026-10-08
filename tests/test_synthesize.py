@@ -232,3 +232,35 @@ def test_without_negatives_nothing_changes_in_the_log(tmp_path, monkeypatch):
     assert run["negatives"] is None
     assert run["accepted"]
     assert run["attempts"][0]["report"]["negative_alerts"] == 0
+
+
+@pytest.mark.parametrize("output_format", ["template", "yaml"])
+def test_semgrep_docs_can_be_left_out_of_the_prompts(tmp_path, monkeypatch, output_format):
+    from src.pipeline.synthesize import NO_DOCS_NOTE, load_docs, load_pattern_docs
+    monkeypatch.chdir(ROOT)
+    bad = collect_files([FIXTURES / "bad"])
+    good = collect_files([FIXTURES / "good"])
+    write_logs(tmp_path / "logs", bad)
+    docs_text = load_pattern_docs() if output_format == "template" else load_docs()
+
+    def prompts_for(docs):
+        seen = []
+
+        def complete(role, prompt):
+            seen.append(prompt)
+            return "no rule", 0.0  # rejected before the gate, so no Semgrep run is needed to read the prompts
+
+        run = synthesize("CWE-416", "A", bad, good, [tmp_path / "logs"], complete=complete,
+                         rules_dir=tmp_path / "rules", logs_dir=tmp_path / "synthesis", max_fix_attempts=1,
+                         output_format=output_format, docs=docs)
+        return seen, run
+
+    with_docs, run_with = prompts_for(True)
+    without_docs, run_without = prompts_for(False)
+
+    assert len(with_docs) == len(without_docs) == 2  # generator and corrector
+    for prompt_with, prompt_without in zip(with_docs, without_docs):
+        assert docs_text in prompt_with and NO_DOCS_NOTE not in prompt_with
+        assert docs_text[:80] not in prompt_without and NO_DOCS_NOTE in prompt_without
+        assert prompt_with.replace(docs_text, NO_DOCS_NOTE) == prompt_without  # nothing else changes
+    assert run_with["docs"] is True and run_without["docs"] is False
