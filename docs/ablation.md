@@ -145,12 +145,51 @@ Nothing has been run on CWE-401 and CWE-457. Baseline packs: 415 -> 7.7% recall 
    template and the corrector, on one CWE and one seed. The same setup failed on CWE-415 and
    CWE-476.
 5. Best-of-N sampling and the v2 detector did not help in the runs made.
+6. With real-world code in the gate and cross-validation (section 6): the largest model writes rules that generalize across
+   Juliet variants (mean recall 76% over 25 folds), none passes the real-world limit, and the rule accepted on Juliet fails it.
 
 ## 5. Not evaluated yet
 
-- Critic and merge agents (not implemented; needs at least the accepted rule).
-- Reproducibility of the accepted rule: more seeds of combo D + template on CWE-416.
+- Critic and merge agents: implemented (changes.md phase 15) but not run on the real pipeline; the comparisons are planned in
+  `ablation_plan.md` and listed in section 6.
+- Reproducibility of the accepted rule: done by cross-validation (section 6). The rule's family reproduces on Juliet and fails the
+  real-world gate.
 - Combo B and A in the spec/template formats; combos B/D with best-of-N.
 - CWE-401 and CWE-457.
 - A "no aids at all" run on the same model as the later runs (only combo A has one).
-- Confidence intervals: all cells are single runs.
+- Confidence intervals: section 6 reports means and spread over folds; sections 1 to 3 are still single runs.
+
+## 6. Real-world gate and cross-validation (changes.md phases 10-15)
+
+Everything here uses the gate with real C code (Git, limit 0.1 alerts per KLOC), CWE-416, the template format, and 5-fold
+cross-validation by flow variant (every variant tested once). Means over folds; the spread is the standard deviation over folds.
+
+### 6a. What the configuration changes did (cross-validation, one seed per row unless stated)
+
+| Model | Configuration | Seed | Accepted | Recall | Precision | Alerts/KLOC |
+|---|---|---|---|---|---|---|
+| Qwen3-4B | template v1 | 0 | 0/5 | 20.0% +- 44.7 | 23.9% (1 fold) | 0.00 |
+| Qwen3-Coder-30B | template v1 | 0 | 0/5 | 89.2% +- 18.6 | 69.8% +- 19.9 | 5.11 +- 2.56 |
+| Qwen3-Coder-30B | v1 + source-line warning | 2 | 0/5 | 69.5% +- 23.7 | 87.4% +- 19.0 | 2.78 +- 2.02 |
+| Qwen3-Coder-30B | final (v2 + warning + `not` feedback) | 0 to 4 pooled | 0/25 | 75.8% +- 25.6 | 83.1% +- 23.1 (24 folds) | 2.92 +- 2.29 |
+
+On seed 2, the only seed with two 30B configurations on the same folds: v1 + warning against final, recall +0.022 (95% interval
++0.000 to +0.067), alerts/KLOC -0.11 (-0.87 to +0.48): no difference that can be told from the spread over folds
+(`python -m src.pipeline.compare`).
+
+### 6b. Comparisons planned (docs/ablation_plan.md), baseline = the final configuration on seeds 1 and 2
+
+| Experiment | Change | Status |
+|---|---|---|
+| `nodocs` | no Semgrep documentation in the prompts | running |
+| `history` | the corrector sees the earlier attempts | not run |
+| `nodiag` | structural diagnoses of the gate off | not run |
+| `critic` | a critic agent reviews each tested rule | not run |
+| `criticnodiag` | the critic instead of the diagnoses | not run |
+| `merge` | a final attempt merges the best and a complementary rule | not run |
+| `pairs` | vulnerable/safe pairs as examples instead of the detector's findings | not run |
+| `none` | no examples | not run |
+| `qwen4b` | the 4B model with the final configuration | not run |
+| `phi4` | a second model family (Phi-4-mini) | not run |
+
+The results go into this table as they come, with the paired comparison against the baseline; null results are reported as such.
