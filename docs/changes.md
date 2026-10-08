@@ -330,6 +330,8 @@ contribution can be measured instead of replaced by hand-written aids. All optio
 | 35 | Combo E: the 30B model in every role with identical load settings, so switching role never reloads it (the critic of combo D, Phi-4-mini, would swap models on every call) | `configs/combos/combo_e.toml` |
 | 36 | `python -m src.pipeline.compare`: paired comparison of two configurations run on the same seeds (same folds and real-world files): mean difference b - a, bootstrap interval over the folds, how often each side is better | `compare.py` |
 | 37 | `scripts/run_ablation_queue.ps1`: runs the planned comparisons one after another, waiting for free RAM before each | `scripts/` |
+| 38 | `compare --baseline ... --grouped DIR...`: every summary found under the folders is labelled by the options and the model it recorded (no docs, history, critic, merge, example mode, no diagnosis, model of another combo) and each group is compared with the baseline on the seeds they share. Summaries written before the options were recorded are skipped | `compare.py` |
+| 39 | Combo F: Phi-4-mini in every role, to test a second model family in the same size class as the 4B; `qwen4b` and `phi4` are in the queue with their own (small) RAM requirement | `configs/combos/combo_f.toml`, `scripts/run_ablation_queue.ps1` |
 
 Notes to declare:
 - Critic, merger and history are LLM agents; their output only changes the prompt of the next attempt, and every rule still goes

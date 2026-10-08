@@ -9,6 +9,12 @@ differences, a bootstrap interval over the folds and how often each side was bet
     python -m src.pipeline.compare --a logs/crossval/D/CWE-416/<seed1>.json ... --label-a with-docs \\
         --b logs/crossval/D/CWE-416/<seed1-nodocs>.json ... --label-b no-docs
 
+Or all experiments at once: every summary found under the given folders is labelled by the options it recorded (no docs,
+history, critic, merge, example mode, no diagnosis) and each group is compared with the baseline on the seeds they share.
+Summaries written before those options existed carry no options and are skipped unless they are given as the baseline.
+
+    python -m src.pipeline.compare --baseline logs/crossval/D/CWE-416/<b0 seed1>.json ... --grouped logs/crossval/D logs/crossval/E
+
 With 10 folds (two seeds) an interval is wide: it tells how large a difference would have to be before it could be
 told apart from the spread over folds, not that a small difference is real. A pair is used only when both sides
 have the metric (a fold without a valid rule has no precision, for example).
@@ -42,6 +48,47 @@ def load_folds(paths):
                 raise ValueError(f"seed {seed} fold {fold['fold']} appears twice on the same side ({path})")
             folds[key] = fold
     return folds
+
+
+def config_label(summary):
+    """
+    The options a summary recorded, as a label ("baseline" when none is on), or None for a summary written before the
+    options were recorded (its configuration is not known from the file).
+    """
+    roles = summary.get("roles")
+    if roles is None and summary.get("docs") is None:
+        return None
+    roles = roles or {}
+    parts = []
+    if summary.get("combo") not in (None, "D", "E"):  # D and E use the same model for the generator and the corrector
+        parts.append(f"model-{summary['combo']}")
+    if summary.get("docs") is False:
+        parts.append("nodocs")
+    parts += [name for name in ("history", "critic", "merge") if roles.get(name)]
+    if roles.get("example_mode") not in (None, "findings"):
+        parts.append(f"examples-{roles['example_mode']}")
+    if roles.get("diagnose") is False:
+        parts.append("nodiag")
+    return "+".join(parts) or "baseline"
+
+
+def group_summaries(paths):
+    """{label: [paths]} for the summaries that recorded their options; json files found under folders are included."""
+    files = []
+    for path in map(Path, paths):
+        files += sorted(path.rglob("*.json")) if path.is_dir() else [path]
+    groups = {}
+    for file in files:
+        try:
+            summary = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(summary, dict) or "folds" not in summary or "seed" not in summary:
+            continue
+        label = config_label(summary)
+        if label is not None:
+            groups.setdefault(label, []).append(str(file))
+    return groups
 
 
 def _value(fold, field):
@@ -112,14 +159,33 @@ def format_report(result, label_a, label_b, folds_a, folds_b):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Paired comparison of two cross-validation configurations.")
-    parser.add_argument("--a", nargs="+", required=True, help="crossval summaries of configuration A (one per seed)")
-    parser.add_argument("--b", nargs="+", required=True, help="crossval summaries of configuration B, on the same seeds")
+    parser = argparse.ArgumentParser(description="Paired comparison of cross-validation configurations.")
+    parser.add_argument("--a", nargs="+", help="crossval summaries of configuration A (one per seed)")
+    parser.add_argument("--b", nargs="+", help="crossval summaries of configuration B, on the same seeds")
     parser.add_argument("--label-a", default="A")
     parser.add_argument("--label-b", default="B")
-    parser.add_argument("--json", default=None, help="Also write the result here")
+    parser.add_argument("--baseline", nargs="+", help="crossval summaries of the baseline, for --grouped")
+    parser.add_argument("--grouped", nargs="+", help="folders (or files) of summaries to compare with --baseline, by the options they recorded")
+    parser.add_argument("--json", default=None, help="Also write the result here (single comparison only)")
     args = parser.parse_args()
 
+    if args.grouped:
+        if not args.baseline:
+            parser.error("--grouped needs --baseline")
+        base = load_folds(args.baseline)
+        groups = group_summaries(args.grouped)
+        groups.pop("baseline", None)
+        if not groups:
+            print("No summary with recorded options found.")
+            return
+        for label, paths in sorted(groups.items()):
+            folds = load_folds(paths)
+            print("=" * 100)
+            print(format_report(compare(base, folds), "baseline", label, base, folds))
+        return
+
+    if not (args.a and args.b):
+        parser.error("give --a and --b, or --baseline and --grouped")
     folds_a, folds_b = load_folds(args.a), load_folds(args.b)
     result = compare(folds_a, folds_b)
     print(format_report(result, args.label_a, args.label_b, folds_a, folds_b))

@@ -1,0 +1,42 @@
+# Combo F - "a second model family".
+# Phi-4-mini (Microsoft, 3.8B, Q6_K, about 3.2 GB) in every role of the synthesis, to test whether the results depend on
+# the Qwen family. It fits entirely on the 6 GB GPU, so it is fast; it is the same size class as combo C's Qwen3-4B
+# (and far smaller than combo D's 30B), so compare it with C first. The detector is not used by the synthesis.
+
+name = "F"
+description = "Qwen2.5-Coder-3B detects; Phi-4-mini generates, corrects, criticizes and merges"
+target_gpu = "GTX 1060 6GB"
+
+[defaults]
+n_gpu_layers = -1
+temperature = 0.0
+
+[loop]
+max_fix_attempts = 3
+
+[roles.detector]
+model = "qwen_coder_3b_q6"
+n_ctx = 16384
+max_tokens = 4096
+
+[roles.generator]
+model = "phi4_mini_q6"
+n_ctx = 8192
+max_tokens = 2048
+
+[roles.corrector]
+model = "phi4_mini_q6"
+n_ctx = 8192
+max_tokens = 2048
+temperature = 0.2
+
+[roles.critic]
+model = "phi4_mini_q6"
+n_ctx = 8192
+max_tokens = 1024
+
+[roles.merger]
+model = "phi4_mini_q6"
+n_ctx = 8192
+max_tokens = 2048
+temperature = 0.2
