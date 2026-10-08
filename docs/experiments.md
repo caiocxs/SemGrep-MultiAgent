@@ -786,3 +786,34 @@ alerts/KLOC: seed 1 fold 2 (0.105, 0 false positives), seed 2 fold 1 (0.37, 0 fa
 **Use of `not_inside`, five seeds** (189 attempts, which include the single complete run and one interrupted fold): 76 reached the gate
 with a `not_inside`; the ineffective-`not` feedback was shown in 53 reports. Of the 56 with recall above 0, 55 use the use's own
 metavariable (median 2.40 alerts/KLOC) and one a new one (seed 1, fold 2, attempt 6: 0.138).
+
+## Comparison `nodocs`: the Semgrep documentation left out of the prompts (2026-10-08, incomplete)
+
+`scripts/run_crossval_seeds.ps1 -Seeds 1,2 -NoDocs -MinFreeGB 19` (combo D, template v2, final configuration, `--no-docs`: the
+1,278-character pattern-syntax section is replaced by a one-sentence note). The system stopped the run for low memory in the
+second seed: **seed 1 is complete (5 folds), seed 2 has 1 of 5 folds**, so the planned 10 paired folds were not reached. Summary of
+seed 1: `results/crossval/D/CWE-416/20261007-230503.json`; the finished fold of seed 2 is only in its run log.
+
+Paired with the final configuration on seed 1 (same folds, same real-world files), `python -m src.pipeline.compare`:
+
+| Metric | with docs | no docs | no docs - with docs | 95% interval | no docs better / worse (folds) |
+|---|---|---|---|---|---|
+| recall | 0.714 | 0.727 | +0.013 | -0.171 to +0.242 | 1 / 2 |
+| precision | 0.911 | 0.848 | -0.063 | -0.257 to +0.068 | 1 / 1 |
+| Juliet false positives | 8.4 | 10.8 | +2.4 | -18.0 to +25.2 | 1 / 1 |
+| real-world alerts/KLOC | 2.396 | 2.514 | +0.118 | -3.03 to +3.51 | 2 / 1 |
+| accepted folds | 0 | 0 | 0 | - | - |
+
+By the criterion of `ablation_plan.md` (interval excluding 0 and a difference of at least 0.10 recall or 25% of the alerts), **no
+effect was detected**. Fold 1 has identical recall, false positives and alert rate with and without the documentation, which
+suggests the model reached the same rule there. The other folds move in both directions: fold 0 recall 0.86 to 0.57, fold 2 recall 0.57 to
+1.00 with 42 false positives, fold 3 alerts 6.81 to 1.76/KLOC. The near-miss of seed 1, fold 2 (0.10 alerts/KLOC with the
+documentation) did not reappear without it: it was one attempt in 31, and changing the prompt changes the whole trajectory of a
+deterministic run, so this is an observation about that path and not evidence about the documentation.
+
+One finished fold of seed 2 without documentation (variants 06, 08, 15, 16; run log `20261008-001126.json`): recall 85.7%,
+precision 100%, 0 Juliet false positives, 0.48 alerts/KLOC, not accepted. It is the lowest real-world rate among the folds of this
+configuration with 0 false positives and high recall, five times the limit; one fold, no comparison drawn.
+
+Limit of this result: 5 paired folds from one seed, and a spread over folds that is larger than the differences one would care about
+(recall +-0.2); a null result here means "not detected", not "no effect". The remaining 5 folds of the plan (seed 2) were not run.
