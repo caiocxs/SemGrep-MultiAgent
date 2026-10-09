@@ -67,7 +67,8 @@ if ($freeGB -lt $MinFreeGB -and -not $Force -and -not $DryRun) {
 }
 
 $running = @(Get-CimInstance Win32_Process |
-    Where-Object { $_.Name -match "python" -and $_.CommandLine -match "src\.pipeline\.(crossval|synthesize)" })
+    Where-Object { $_.Name -match "python" -and $_.CommandLine -match "src\.pipeline\.(crossval|synthesize)" `
+        -and $_.CommandLine -notmatch "--combo\s+[GHI]\s" })  # remote combos load no model, they do not compete for RAM
 if ($running.Count -gt 0 -and -not $DryRun) {
     $ids = ($running | ForEach-Object { $_.ProcessId }) -join ", "
     throw "Another synthesis/cross-validation is running (PID $ids). Wait for it or end it first."

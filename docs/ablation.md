@@ -184,10 +184,10 @@ On seed 2, the only seed with two 30B configurations on the same folds: v1 + war
 | `nodocs` | no Semgrep documentation in the prompts | done, 10 paired folds: no effect by the plan's criterion (recall +0.024, interval -0.10 to +0.16); alerts/KLOC -0.88 in 7 of 10 folds, exploratory (interval -2.8 to +1.0) |
 | `history` | the corrector sees the earlier attempts | done, 10 paired folds: no effect detected (recall +0.010, interval -0.04 to +0.08); repeated rules rose from 0/70 to 8/70 attempts (exploratory) |
 | `nodiag` | structural diagnoses of the gate off | done, 25 paired folds (5 seeds): recall +0.084 (interval +0.013 to +0.157), below the 0.10 of the criterion, so not an effect; precision -0.074 and alerts +0.86 with intervals that include 0; valid attempts 60% against 74% |
-| `critic` | a critic agent reviews each tested rule | not run |
-| `criticnodiag` | the critic instead of the diagnoses | not run |
+| `critic` | a critic agent reviews each tested rule | done, 10 paired folds: no effect (recall -0.069, interval -0.27 to +0.11; alerts -0.40, interval -2.5 to +1.7) |
+| `criticnodiag` | the critic instead of the diagnoses | done, 10 paired folds: no effect (recall -0.069, interval -0.29 to +0.16; alerts +0.26); the critic does not replace the diagnoses, and adds nothing to them |
 | `merge` | a final attempt merges the best and a complementary rule | not run |
-| `pairs` | vulnerable/safe pairs as examples instead of the detector's findings | not run |
+| `pairs` | vulnerable/safe pairs as examples instead of the detector's findings | done, 10 paired folds: no effect by the criterion (recall +0.158, interval -0.10 to +0.37; alerts +0.95), but **2 of 10 folds accepted**, the only accepted folds of all comparisons (seed 1, folds 0 and 3: test recall 57% and 31%, 0 Juliet false positives, 0.03 and 0.02 alerts/KLOC); upper bound on the example information, not the designed pipeline; the two rules were not read |
 | `none` | no examples | not run |
 | `qwen4b` | the 4B model with the final configuration | not run |
 | `phi4` | a second model family (Phi-4-mini) | not run |
@@ -201,3 +201,69 @@ Exploratory options (see `docs/ablation_plan.md`, last section), seeds 1 and 2, 
 | `guard` | the corrector always edits the best rule so far | no effect: recall +0.076 (-0.02 to +0.21), alerts +0.66 (-0.09 to +1.79), higher on average |
 | `apis` | the prompts list the project's memory functions | no effect by the criterion, but alerts 6.28 against 2.53 (interval -1.6 to +12.1); the model copies the list into the event |
 | `guardapis` | both | an effect, harmful: recall +0.259, precision -0.388, 101 Juliet false positives, 17 alerts/KLOC (interval of the alerts +0.33 to +34.2) |
+
+## 7. Hosted models against the local ones: does a larger model pass the pipeline?
+
+Question: if the generator and the corrector are a 120B-class hosted model instead of a local one, do the rules pass the pipeline's
+gates (Juliet false positives and real-world alerts under 0.1 per KLOC on the train side)? Combos G, H and I use the same
+loop, template, prompts, folds and real-world files as combo D; only the generator and the corrector call an API (`src/pipeline/remote.py`,
+`configs/combos/combo_{g,h,i}.toml`; the models come from `.env`). Everything else, including the gate, is local and deterministic. These
+arms are reported apart from the local ones: a hosted 120B model is not a small local model (principle 1 of the project), and the
+prompts, with code from Juliet and Git, leave the machine.
+
+### 7a. Result (CWE-416, template format, 5-fold cross-validation by variant, same seeds and folds as B0)
+
+| Generator and corrector | Seeds | Folds | Accepted | Recall | Precision | Juliet FP | Real-world alerts/KLOC |
+|---|---|---|---|---|---|---|---|
+| Qwen3-4B, local (combo C, template v1) | 0 | 5 | 0 | 20.0% | 23.9% (1 fold) | - | 0.00 (rules empty or broad) |
+| Qwen3-Coder-30B, local (B0, final) | 1, 2 | 10 | **0** | 71.6% | 89.4% | 9.0 | 2.53 |
+| gpt-oss-120b, Groq (G) | 1, 2 | 10 | **0** | **98.9%** | 84.1% | 11.4 | 2.59 |
+| Nemotron-3-super-120b, OpenRouter free (I) | 1 | 5 | **0** | 92.7% | 75.5% | 20.4 | 3.77 |
+| Gemini flash (H) | 1 | partial | - | - | - | - | - (see 7b) |
+
+Paired with B0 on the same folds (`python -m src.pipeline.compare`, bootstrap 95% interval over folds):
+
+| Comparison | Recall | Precision | Juliet FP | Real-world alerts/KLOC |
+|---|---|---|---|---|
+| G against B0, 10 folds | **+0.273** [+0.12, +0.41] | -0.053 [-0.21, +0.10] | +2.4 [-13.8, +18.6] | +0.06 [-2.15, +2.16] |
+| I against B0 seed 1, 5 folds | +0.213 [+0.03, +0.40] | -0.155 [-0.36, +0.05] | +12.0 [-12.0, +37.2] | +1.37 [-1.85, +4.62] |
+
+**Reading.** By the pre-registered criterion (interval excludes 0 and the difference reaches 0.10 in recall) the Groq model has a real
+recall effect over the local 30B: it writes rules that detect almost every held-out Juliet variant. It does not pass the pipeline:
+0 of 10 folds accepted, and the real-world alert rate is the same as the local model's (2.59 against 2.53 per KLOC, limit 0.1). The
+larger model detects the Juliet cases more often, but its rules raise as many alerts on the Git sources as the local ones. The rules of G
+and I were not read, so the reason is not known; the earlier reading of local rules (`findings.md`, items 3 and 9) found loops that move to
+another element and reassignment through macros, and the equal alert rate suggests the same obstacle, which a larger generator does not remove. OpenRouter shows the same direction with less recall and more
+false positives, on one seed only (5 folds, the interval of the recall barely excludes 0): exploratory.
+
+The same holds for the only accepted folds of the whole study, which are from a **local** model with a different example source
+(`pairs`, section 6b): they have low recall (57% and 31%), which suggests narrow rules, and were not read.
+
+### 7b. Rate limits (from `logs/remote_usage.jsonl`, one line per call, keys never logged)
+
+| Provider (free tier) | Limits seen | Calls | Seconds per call | 429 answers | Time waiting for limits |
+|---|---|---|---|---|---|
+| Groq, `openai/gpt-oss-120b` | 1000 requests/day, 8000 tokens/min (response headers `x-ratelimit-*`) | 74 | 2.2 (max 5.6) | 0 | 9 s of pacing (`min_interval` 2.5 s) |
+| OpenRouter, Nemotron free | not exposed in headers | 54 so far | 17.9 | 5 | 2431 s |
+| Gemini, `gemini-flash-latest`, two keys | not exposed in headers | 20 so far | 130.6 | 7 | 3464 s |
+
+- **Groq fits a full experiment inside the limits.** Ten folds (two seeds) took 74 calls (7% of the day's requests) and about 231 thousand
+  tokens (181 thousand of prompt, 50 thousand of answer) in about two hours, and the time is dominated by the local Semgrep gate (the model call is
+  2 s). A call is about 2.5 thousand prompt tokens, and about 700 of answer, so the 8000 tokens/min limit allows two to three calls per minute at full speed; the gate's
+  time between calls kept the run far from it. A longer run (more seeds or CWEs) would hit the per-minute token limit first, then the
+  daily one (not exposed by the headers).
+- **OpenRouter's free model works, slowly:** 18 s per answer (about 2000 tokens each, longer than the other models, which write 500 to 700)
+  and a 429 every ten calls, handled by waiting. One seed (5 folds) took about half an hour.
+- **Gemini's free tier is the limit of this study:** 20 calls in an hour and a half, 7 of the 20 answered 429 even with two keys, 130 s per
+  call on average. A 5-fold seed needs about 35 calls, so each seed takes many hours; only part of seed 1 exists and the arm is not compared.
+  The quota, not the model, decides what can be measured with it.
+- The pacing and retry code (`min_interval`, Retry-After, key rotation, stop when the wait suggests the daily quota is gone) is tested
+  in `tests/test_remote.py`.
+
+### 7c. Limits of this comparison
+
+- Two hosted models on one or two seeds each; the 10-fold interval of G is the only one that supports a claim, the rest is exploratory.
+- A hosted model is not deterministic across days (versions change) even at temperature 0; the run was made once.
+- Prompts include code of the Juliet and Git sources; the free tiers may keep them.
+- Not measured here: the 4B local model and Phi-4-mini with the final configuration (`qwen4b`, `phi4`, queued), which are the reference
+  for the small-model end of the comparison.
