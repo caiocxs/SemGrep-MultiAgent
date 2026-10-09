@@ -22,7 +22,11 @@ WITH RECURSIVE reach(free_id, event_id) AS (
     JOIN events cur ON cur.id = r.event_id
     JOIN events origin ON origin.id = r.free_id
     JOIN flow fl ON fl.src = cur.id
-    WHERE NOT (cur.var = origin.var AND cur.kind IN ('reset', 'alloc'))
+    WHERE NOT (cur.kind IN ('reset', 'alloc') AND (
+        cur.var = origin.var
+        OR substr(origin.var, 1, length(cur.var) + 1) IN (cur.var || '.', cur.var || '[')
+        OR substr(origin.var, 1, length(cur.var) + 2) = cur.var || '->'
+        OR instr(origin.var, '[' || cur.var || ']') > 0))  -- a[i] after i changes is another element
 )
 """
 
@@ -34,7 +38,8 @@ JOIN events origin ON origin.id = r.free_id
 JOIN events hit ON hit.id = r.event_id
 JOIN functions fn ON fn.id = origin.func_id
 JOIN files fi ON fi.id = fn.file_id
-WHERE hit.var = origin.var AND hit.kind IN ({kinds})
+WHERE (hit.var = origin.var OR substr(hit.var, 1, length(origin.var) + 1) IN (origin.var || '.', origin.var || '[')
+       OR substr(hit.var, 1, length(origin.var) + 2) = origin.var || '->') AND hit.kind IN ({kinds})
 ORDER BY fi.path, origin.line, hit.line
 """
 

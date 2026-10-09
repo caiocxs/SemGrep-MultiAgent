@@ -1,7 +1,7 @@
 # Event-graph analyzer (design sketch)
 
-Status: sketch on branch `feat/graph-analyzer`. The schema and the path queries exist and are tested on hand-built graphs
-(`tests/test_graph_paths.py`); the extractor from C source, the judge and the evaluation are not written.
+Status: on branch `feat/graph-analyzer`. The schema, the path queries, the tree-sitter extractor and the scoring against Juliet
+and the Git sources exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`); the LLM judge is not written.
 
 ## Why a second arm
 
@@ -47,6 +47,41 @@ measured separately.
 - The 16 Git fix commits: alert near the fixed lines before the fix and none after (the rules were at chance level, 31% against 36%).
 - Arms: query alone; query + judge with a 4B local model; query + judge with the 30B local model; query + judge through an API
   (reported apart). Each judge arm is paired with the query alone on the same candidates.
+
+## Extractor (`src/graph/extract.py`) and first measurements
+
+tree-sitter C, one pass per file (events and flow edges per function) and one pass over the whole code base that binds call
+arguments to the callee's parameters and turns each call into a free, a use or nothing from a summary of the callee, iterated
+to a fixed point (a wrapper of `free` two calls deep counts). Generic conventions, each with a test: `exit`/`die`/`abort`
+end the flow; `&p` passed to a call is a reset of `p`; a name declared in a block is another variable when the block is left
+(also by `break`/`continue`) or entered again; a macro whose name contains ALLOC assigns its first argument; `*foreach*` macros
+and calls with a block argument are loops that assign their plain-identifier arguments; `FREE_AND_NULL`-style macros free and reset.
+
+Scored by `python -m src.graph.evaluate` with the gate's rules (hit in a `*bad*` function of a BAD file, false positive in a
+`*good*` function, a case split over files found if any file is), and on the Git sources (`../git`, 644 files, 400 KLOC) split
+by file hash exactly as the synthesis splits them (seed 0, 446 train / 198 test files).
+
+| Query | Juliet | Git train (alerts/KLOC) | Git test (alerts/KLOC) |
+|---|---|---|---|
+| use after free, first version | 126/138 cases, 0 false positives | 0.320 | 0.232 |
+| + the conventions above | 126/138 cases, 0 false positives | 0.014 | 0.063 |
+| double free (CWE-415), no tuning | 150/272 cases, 6 false positives | 0.059 | 0.295 |
+
+How the numbers were obtained: the conventions were chosen by reading **train** alerts only (the test alerts were counted at each
+step, since the evaluator prints both counts, but read only once at the end). The limit of the synthesis gate is 0.1 per KLOC on
+the train side, which the use-after-free query meets (0.014) with Juliet recall equal to the hand-checked reference fixture of the
+gate (126/138, 0 false positives). The rule synthesis reaches 2.9 alerts/KLOC at best (`findings.md`).
+
+What the alerts still are: all 11 use-after-free alerts left (4 train, 7 test) were read; none is a use after free. They come from
+the call summary ("the callee frees its parameter on some path", used after a call on another path), which is the limit documented
+in the extractor. CWE-415: variants 01-22 (the data-flow and control-flow variants) are found 6/6 each, the later variants (31+,
+across functions and files, pointer-to-pointer) are not; the 6 false positives are one Juliet pattern, a loop `for (j = 0; j < 1; j++)`
+that runs once, which a graph that does not evaluate conditions sees as a repeated free. Nothing was tuned on CWE-415: it is the
+generalization check, and 0% was the result of the rule synthesis on it for both models.
+
+What this does not show: that the query finds real bugs (the 16 Git fix commits are not run yet), and nothing about the judge.
+The real-world gate treats the code as correct, so a query that reports little passes it; Juliet recall and the fix commits have
+to be read together with it.
 
 ## Risks
 
