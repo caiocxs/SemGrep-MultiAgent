@@ -53,16 +53,27 @@ CREATE TABLE IF NOT EXISTS call_args (
     call_event  INTEGER NOT NULL REFERENCES events(id),
     callee_name TEXT NOT NULL,
     callee_id   INTEGER REFERENCES functions(id),  -- NULL when the callee is not in the project
-    arg_index  INTEGER NOT NULL,
-    var        TEXT NOT NULL,
+    arg_index   INTEGER NOT NULL,
+    var         TEXT NOT NULL,
+    addr        INTEGER NOT NULL DEFAULT 0,        -- 1 when the argument is `&var`: the callee gets a pointer to the variable
     PRIMARY KEY (call_event, arg_index)
 );
 
+-- deref = 0: the function frees/uses the parameter itself; deref = 1: it frees/uses the pointer stored at *parameter
+-- (what a caller passing `&p` needs to know about p).
 CREATE TABLE IF NOT EXISTS summaries (
     func_id   INTEGER NOT NULL REFERENCES functions(id),
     param     INTEGER NOT NULL,
+    deref     INTEGER NOT NULL DEFAULT 0,
     effect    TEXT NOT NULL CHECK (effect IN ('frees', 'uses', 'resets')),
-    PRIMARY KEY (func_id, param, effect)
+    PRIMARY KEY (func_id, param, deref, effect)
+);
+
+-- Frees, uses and reassignments (`*param = ..`), inside a function, of a local that holds `*param` (q = *param, possibly through a copy of param).
+CREATE TABLE IF NOT EXISTS deref_effects (
+    func_id INTEGER NOT NULL REFERENCES functions(id),
+    param   TEXT NOT NULL,
+    effect  TEXT NOT NULL CHECK (effect IN ('free', 'use', 'reset'))
 );
 
 -- Parameter names by position, to bind call arguments to what a function does to its parameters.

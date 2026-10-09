@@ -43,6 +43,7 @@ MAX_SUMMARY_ROUNDS = 6
 
 _PARSER = Parser(Language(tree_sitter_c.language()))
 _WS = re.compile(r"\s+")
+_BASE = re.compile(r"->|\.|\[")
 
 
 def _text(node):
@@ -99,8 +100,11 @@ def _called_name(call):
 class _Function:
     """Builds the events and flow edges of one function."""
 
-    def __init__(self, extractor, func_id, source_lines):
+    def __init__(self, extractor, func_id, source_lines, params=()):
         self.x = extractor
+        self.params = set(params)
+        self.copy_of = {}        # local -> parameter it is a copy of (q = (T *)param)
+        self.deref_of = {}       # local -> parameter whose pointee it holds (q = *param, `data = *dataPtr`)
         self.func_id = func_id
         self.lines = source_lines
         self.frontier = set()
@@ -115,6 +119,10 @@ class _Function:
         row = node.start_point[0]
         detail = self.lines[row].strip()[:200] if row < len(self.lines) else ""
         self.x.events.append((eid, self.func_id, row + 1, kind, var, detail))
+        if kind in ("use", "free") and var:
+            owner = self.deref_of.get(_BASE.split(var, 1)[0])
+            if owner:  # the pointer loaded from *owner is freed or used here: what a caller of &p needs to know
+                self.x.deref_effects.append((self.func_id, owner, kind))
         for src in self.frontier:
             self.x.flow.append((src, eid))
         self.frontier = {eid}
@@ -186,6 +194,24 @@ class _Function:
         if path:
             self.event("reset", path, node)
 
+    def _root(self, path):
+        return path if path in self.params else self.copy_of.get(path)
+
+    def track(self, name, value):
+        """Remembers `q = param`, `q = (T *)param` and `q = *param` so that uses of q count for the parameter."""
+        self.copy_of.pop(name, None)
+        self.deref_of.pop(name, None)
+        value = _strip(value)
+        if value is None:
+            return
+        path = path_of(value)
+        if path and self._root(path):
+            self.copy_of[name] = self._root(path)
+        elif value.type == "pointer_expression" and value.children and value.children[0].type == "*":
+            owner = self._root(path_of(value.child_by_field_name("argument")) or "")
+            if owner:
+                self.deref_of[name] = owner
+
     @staticmethod
     def _allocates(value):
         value = _strip(value)
@@ -195,9 +221,16 @@ class _Function:
         left, right = n.child_by_field_name("left"), n.child_by_field_name("right")
         self.expr(right)
         self.lvalue(left)
+        target = _strip(left)
+        if target is not None and target.type == "pointer_expression" and target.children and target.children[0].type == "*":
+            owner = self._root(path_of(target.child_by_field_name("argument")) or "")
+            if owner:  # `*param = ..`: whoever passed &p gets a new value in p
+                self.x.deref_effects.append((self.func_id, owner, "reset"))
         path = path_of(left)
         if path:
             self.event("alloc" if self._allocates(right) else "reset", path, n)
+            if left.type == "identifier":
+                self.track(path, right)
 
     def call(self, n):
         function = n.child_by_field_name("function")
@@ -232,10 +265,17 @@ class _Function:
                 self.event("use", path, n)
             else:
                 eid = self.event("call", path, n)
-                self.x.call_args.append((eid, name, index, path))
-        for arg in args:  # `&p` may be filled in by the callee: p has a new value afterwards
+                self.x.call_args.append((eid, name, index, path, 0))
+        for index, arg in enumerate(args):  # `&p`: the callee may free, use or fill in p (decided when the callee is known)
             if arg.type == "pointer_expression" and arg.children and arg.children[0].type == "&":
-                self.reset(path_of(arg.child_by_field_name("argument")), arg)
+                target = path_of(arg.child_by_field_name("argument"))
+                if not target:
+                    continue
+                if name is None:
+                    self.reset(target, arg)
+                else:
+                    eid = self.event("call", target, arg)
+                    self.x.call_args.append((eid, name, index, target, 1))
         if name in NORETURN_FUNCTIONS:
             self.frontier = set()
 
@@ -289,6 +329,7 @@ class _Function:
                 name, kind = _identifier_of(declarator), "reset"  # a new variable starts without a value
             if name:
                 self.event(kind, name, declarator)
+                self.track(name, value if declarator.type == "init_declarator" else None)
                 if self.scopes:
                     self.scopes[-1].append(name)
 
@@ -321,24 +362,55 @@ class _Function:
             self.x.flow.append((src, head))
         self.frontier = exits | ctx["breaks"]
 
+    @staticmethod
+    def _runs_once(n):
+        """`for (i = 0; i < 1; i++)` and the like: constant bounds, step 1, so the body runs exactly once."""
+        init, cond, update = (n.child_by_field_name(f) for f in ("initializer", "condition", "update"))
+        if init is None or cond is None or update is None:
+            return False
+        if init.type == "declaration":
+            decls = init.children_by_field_name("declarator")
+            if len(decls) != 1 or decls[0].type != "init_declarator":
+                return False
+            var, start = _identifier_of(decls[0].child_by_field_name("declarator")), decls[0].child_by_field_name("value")
+        elif init.type == "assignment_expression":
+            var, start = path_of(init.child_by_field_name("left")), init.child_by_field_name("right")
+        else:
+            return False
+        if cond.type != "binary_expression" or update.type != "update_expression" or not var \
+                or _text(update) not in (var + "++", "++" + var):
+            return False
+        operator = cond.child_by_field_name("operator")
+        left, right = cond.child_by_field_name("left"), cond.child_by_field_name("right")
+        try:
+            low, high = int(_text(start), 0), int(_text(right), 0)
+        except (TypeError, ValueError):
+            return False
+        if path_of(left) != var or operator is None or _text(operator) not in ("<", "<="):
+            return False
+        return high - low + (1 if _text(operator) == "<=" else 0) == 1
+
     def s_for_statement(self, n):
         initializer = n.child_by_field_name("initializer")
         if initializer is not None:
             self.stmt(initializer) if initializer.type == "declaration" else self.expr(initializer)
+        once = self._runs_once(n)
         head = self.join(n)
         condition = n.child_by_field_name("condition")
         if condition is not None:
             self.expr(condition)
-        exits = set(self.frontier) if self._exit_when(condition) else set()
+        exits = set(self.frontier) if self._exit_when(condition) and not once else set()
         ctx = self._loop_body(n.child_by_field_name("body"))
         self.frontier = set(self.frontier) | ctx["continues"]
         update = n.child_by_field_name("update")
         if update is not None:
             self.join(n)
             self.expr(update)
-        for src in self.frontier:
-            self.x.flow.append((src, head))
-        self.frontier = exits | ctx["breaks"]
+        if not once:  # a loop that runs once has no back edge
+            for src in self.frontier:
+                self.x.flow.append((src, head))
+            self.frontier = set()
+        self.frontier = set(self.frontier) | exits | ctx["breaks"]
 
     def s_do_statement(self, n):
         head = self.join(n)
@@ -428,7 +500,7 @@ class _Function:
 class Extractor:
     def __init__(self, conn):
         self.conn = conn
-        self.events, self.flow, self.call_args = [], [], []
+        self.events, self.flow, self.call_args, self.deref_effects = [], [], [], []
         self._next = (conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]) + 1
 
     def next_id(self):
@@ -444,9 +516,10 @@ class Extractor:
         c = self.conn
         c.executemany("INSERT INTO events (id, func_id, line, kind, var, detail) VALUES (?, ?, ?, ?, ?, ?)", self.events)
         c.executemany("INSERT OR IGNORE INTO flow VALUES (?, ?)", self.flow)
-        c.executemany("INSERT OR IGNORE INTO call_args (call_event, callee_name, arg_index, var) VALUES (?, ?, ?, ?)",
+        c.executemany("INSERT OR IGNORE INTO call_args (call_event, callee_name, arg_index, var, addr) VALUES (?, ?, ?, ?, ?)",
                       self.call_args)
-        self.events, self.flow, self.call_args = [], [], []
+        c.executemany("INSERT INTO deref_effects VALUES (?, ?, ?)", self.deref_effects)
+        self.events, self.flow, self.call_args, self.deref_effects = [], [], [], []
 
 
 def _functions(root):
@@ -497,7 +570,7 @@ def extract_file(conn, path, extractor=None):
         func_id = cur.lastrowid
         conn.executemany("INSERT INTO params VALUES (?, ?, ?)",
                          [(func_id, i, p) for i, p in enumerate(params) if p])
-        builder = _Function(extractor, func_id, lines)
+        builder = _Function(extractor, func_id, lines, [p for p in params if p])
         builder.stmt(body)
         count += 1
     if own:
@@ -528,27 +601,35 @@ def resolve_calls(conn):
         for func_id, var, kind in conn.execute("SELECT func_id, var, kind FROM events WHERE kind IN ('free', 'use')"):
             idx = params.get(func_id, {}).get(var)
             if idx is not None:
-                effects.add((func_id, idx, "frees" if kind == "free" else "uses"))
+                effects.add((func_id, idx, 0, "frees" if kind == "free" else "uses"))
+        for func_id, name, kind in conn.execute("SELECT func_id, param, effect FROM deref_effects"):
+            idx = params.get(func_id, {}).get(name)
+            if idx is not None:
+                effects.add((func_id, idx, 1, {"free": "frees", "use": "uses", "reset": "resets"}[kind]))
         return effects
 
-    calls = conn.execute("SELECT call_event, callee_id, arg_index FROM call_args").fetchall()
+    calls = conn.execute("SELECT call_event, callee_id, arg_index, addr FROM call_args").fetchall()
     for _ in range(MAX_SUMMARY_ROUNDS):
         effects = summaries()
         changed = 0
-        for event_id, callee, index in calls:
-            if callee is None:
-                kind = "use"  # a call the project does not define: assume it reads its pointer arguments
-            elif (callee, index, "frees") in effects:
+        for event_id, callee, index, addr in calls:
+            if callee is not None and (callee, index, addr, "resets") in effects:
+                kind = "reset"  # the callee assigns *param: after the call p holds another value (e.g. a pop of a list head)
+            elif callee is not None and (callee, index, addr, "frees") in effects:
                 kind = "free"
-            elif (callee, index, "uses") in effects:
+            elif callee is not None and (callee, index, addr, "uses") in effects:
                 kind = "use"
+            elif addr:
+                kind = "reset"  # `&p` to a function that does not free or read p: it may have assigned it
+            elif callee is None:
+                kind = "use"  # a call the project does not define: assume it reads its pointer arguments
             else:
                 kind = "join"
             changed += conn.execute("UPDATE events SET kind = ? WHERE id = ? AND kind != ?", (kind, event_id, kind)).rowcount
         if not changed:
             break
     conn.execute("DELETE FROM summaries")
-    conn.executemany("INSERT INTO summaries VALUES (?, ?, ?)", sorted(summaries()))
+    conn.executemany("INSERT INTO summaries (func_id, param, deref, effect) VALUES (?, ?, ?, ?)", sorted(summaries()))
     conn.commit()
 
 

@@ -159,3 +159,41 @@ def test_free_and_null_macro(tmp_path):
     assert uaf(graph(tmp_path, src)) == []
 
 
+def test_loop_that_runs_once_has_no_back_edge(tmp_path):
+    once = "void f(char *d) {\n int j;\n for (j = 0; j < 1; j++) {\n  free(d);\n }\n}\n"
+    assert dfree(graph(tmp_path, once)) == []
+    twice = "void f(char *d) {\n int j;\n for (j = 0; j < 2; j++) {\n  free(d);\n }\n}\n"
+    assert dfree(graph(tmp_path, twice)) == [(4, 4)]
+    declared = "void f(char *d) {\n for (int j = 0; j <= 0; ++j) {\n  free(d);\n }\n}\n"
+    assert dfree(graph(tmp_path, declared)) == []
+
+
+def test_address_of_passed_to_a_function_that_uses_the_pointee(tmp_path):
+    src = ("static void sink(char **pp) {\n char *d = *pp;\n d[0] = 1;\n}\n"
+           "void f(char *p) {\n free(p);\n sink(&p);\n}\n")
+    assert uaf(graph(tmp_path, src)) == [(6, 7, "p")]
+
+
+def test_address_of_through_a_cast_of_the_parameter(tmp_path):
+    src = ("static void sink(void *v) {\n char **pp = (char **)v;\n char *d = *pp;\n d[0] = 1;\n}\n"
+           "void f(char *p) {\n free(p);\n sink(&p);\n}\n")
+    assert uaf(graph(tmp_path, src)) == [(7, 8, "p")]
+
+
+def test_callee_that_frees_the_pointee_frees_the_variable(tmp_path):
+    src = ("static void drop(char **pp) {\n char *d = *pp;\n free(d);\n}\n"
+           "void f(char *p) {\n drop(&p);\n p[0] = 1;\n}\n")
+    assert uaf(graph(tmp_path, src)) == [(6, 7, "p")]
+
+
+def test_callee_that_assigns_the_pointee_resets_the_variable(tmp_path):
+    src = ("static void pop(struct node **head) {\n struct node *top = *head;\n *head = top->next;\n free(top);\n}\n"
+           "void f(struct node *s) {\n pop(&s);\n s->x = 1;\n}\n")
+    assert uaf(graph(tmp_path, src)) == []
+
+
+def test_address_of_to_an_unknown_function_is_a_reset(tmp_path):
+    src = "void f(char *p) {\n free(p);\n fill(&p);\n p[0] = 1;\n}\n"
+    assert uaf(graph(tmp_path, src)) == []
+
+
