@@ -183,7 +183,7 @@ On seed 2, the only seed with two 30B configurations on the same folds: v1 + war
 |---|---|---|
 | `nodocs` | no Semgrep documentation in the prompts | done, 10 paired folds: no effect by the plan's criterion (recall +0.024, interval -0.10 to +0.16); alerts/KLOC -0.88 in 7 of 10 folds, exploratory (interval -2.8 to +1.0) |
 | `history` | the corrector sees the earlier attempts | done, 10 paired folds: no effect detected (recall +0.010, interval -0.04 to +0.08); repeated rules rose from 0/70 to 8/70 attempts (exploratory) |
-| `nodiag` | structural diagnoses of the gate off | done, 10 paired folds: recall +0.119 (interval +0.006 to +0.235), alerts +0.19 (interval -1.2 to +1.6); the recall difference meets the criterion and must be re-run on seeds 0, 3 and 4 before it is a finding; valid attempts 57% against 83% |
+| `nodiag` | structural diagnoses of the gate off | done, 25 paired folds (5 seeds): recall +0.084 (interval +0.013 to +0.157), below the 0.10 of the criterion, so not an effect; precision -0.074 and alerts +0.86 with intervals that include 0; valid attempts 60% against 74% |
 | `critic` | a critic agent reviews each tested rule | not run |
 | `criticnodiag` | the critic instead of the diagnoses | not run |
 | `merge` | a final attempt merges the best and a complementary rule | not run |
@@ -193,3 +193,11 @@ On seed 2, the only seed with two 30B configurations on the same folds: v1 + war
 | `phi4` | a second model family (Phi-4-mini) | not run |
 
 The results go into this table as they come, with the paired comparison against the baseline; null results are reported as such.
+
+Exploratory options (see `docs/ablation_plan.md`, last section), seeds 1 and 2, 10 paired folds each:
+
+| Name | What changes | Result |
+|---|---|---|
+| `guard` | the corrector always edits the best rule so far | no effect: recall +0.076 (-0.02 to +0.21), alerts +0.66 (-0.09 to +1.79), higher on average |
+| `apis` | the prompts list the project's memory functions | no effect by the criterion, but alerts 6.28 against 2.53 (interval -1.6 to +12.1); the model copies the list into the event |
+| `guardapis` | both | an effect, harmful: recall +0.259, precision -0.388, 101 Juliet false positives, 17 alerts/KLOC (interval of the alerts +0.33 to +34.2) |

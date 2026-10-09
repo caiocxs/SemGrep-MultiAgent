@@ -85,8 +85,16 @@ real-world files: they are not paired.
    seeds. The template prompt already carries the strategy, so the documentation adds little.
 11. **Showing the corrector its earlier attempts does not help.** With a summary of the earlier attempts and their numbers in the prompt,
    10 paired folds give recall +0.010 (95% interval -0.04 to +0.08), precision +0.010 and real-world alerts -0.43 per KLOC (interval
-   -1.6 to +0.4): no effect by the pre-registered criterion. The attempts that repeat an earlier rule went up from 0 of 70 to 8 of 70
-   (exploratory, descriptive metric): the model does not use the history to avoid what failed.
+   -1.6 to +0.4): no effect by the pre-registered criterion. The attempts that repeat an earlier rule were 8 of 70 against 0 of 70 in the baseline of the same
+   two seeds, but the baseline has 12 of 175 on the five seeds: no evidence that the model uses the history to avoid what failed.
+12. **Removing the gate's diagnoses raises recall a little, not enough to count.** On 25 paired folds (5 seeds) recall is +0.084 (interval
+   +0.013 to +0.157), precision -0.074 and alerts +0.86 per KLOC (both intervals include 0): below the 0.10 of the criterion. The +0.119 of
+   the first 10 folds did not hold up. The diagnoses make the rules slightly more precise at a small cost in recall; they are not what separates
+   the rules that pass from the rules that do not.
+13. **The two changes taken from the related work did not help.** `--guard` (always edit the best rule) gives no effect (recall +0.076,
+   alerts +0.66, intervals include 0) and `--project-apis` (list the project's memory functions) gives more alerts, not fewer (6.28 against
+   2.53, not significant); together they produce wide rules (recall 97.5%, 101 false positives, 17 alerts/KLOC). The model copies the list into the
+   rule's event, and only 4 of the 51 alerts reviewed by hand involved the wrapper the list was meant to help with. Exploratory, 10 folds each.
 
 ## Threats to validity and limits
 

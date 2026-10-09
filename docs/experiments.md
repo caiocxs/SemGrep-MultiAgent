@@ -927,3 +927,48 @@ corrector with less to read often breaks the rule, and the loop keeps the early 
 diagnoses (the source-line warning and the ineffective-`not` message) push the model toward narrower rules, which costs recall without
 lowering the alerts. This is a reading of descriptive numbers, not a result. In the run logs several attempts have recall 100% with 174-180 false positives on the Juliet files (seen in the output of the
 run, not counted): `--guard` is meant for that case.
+
+## Comparisons `nodiag` (5 seeds), `guard`, `apis` and `guardapis` (2026-10-09)
+
+All with the final configuration of combo D (`nodiag` on combo E, the same 30B model), `--negatives ../git`, seeds 1 and 2 for the new
+options and seeds 0 to 4 for the repetition of `nodiag`. No fold was accepted in any of them. Summaries in `results/crossval/D|E/CWE-416/`.
+`python -m src.pipeline.compare --baseline <B0 of the 5 seeds> --grouped logs/crossval/D logs/crossval/E`, paired by (seed, fold):
+
+| Configuration | Pairs | Recall b - a (95% interval) | Precision | Juliet false positives | Real-world alerts/KLOC (better / worse folds) |
+|---|---|---|---|---|---|
+| `nodiag` | 25 | **+0.084** (+0.013 to +0.157) | -0.074 (-0.167 to +0.018) | +6.3 (-3.3 to +15.8) | +0.86 (-0.15 to +1.91), 10 / 11 |
+| `guard` | 10 | +0.076 (-0.022 to +0.206) | -0.065 (-0.152 to 0.000) | +4.8 (0.0 to +13.2) | +0.66 (-0.09 to +1.79), 3 / 5 |
+| `apis` | 10 | +0.108 (-0.044 to +0.260) | -0.143 (-0.357 to +0.060) | +25.0 (-8.4 to +65.4) | +3.75 (-1.57 to +12.11), 3 / 7 |
+| `guard` + `apis` | 10 | **+0.259** (+0.132 to +0.373) | **-0.388** (-0.570 to -0.195) | **+92.4** (+31.6 to +165.6) | **+14.49** (+0.33 to +34.24), 4 / 6 |
+
+By the criterion of the plan (interval excludes 0 and the difference reaches 0.10 in recall or 25% in alerts):
+
+- **`nodiag`: the effect of the first 10 folds (+0.119) is not confirmed.** With 25 folds the recall difference is +0.084: the interval
+  still excludes 0, but the difference is below the 0.10 of the criterion. Precision and alerts go the way the plan expected (worse without the
+  diagnoses) but their intervals include 0. The first result was partly luck of the folds, as the plan warned.
+- **`guard`: no effect.** Recall, precision, false positives and alerts all have intervals that include 0 (precision and false positives touch it);
+  the alerts, which it was meant to lower, are higher on average (3.19 against 2.53). Its mechanism did act: the corrector had a correction
+  discarded in 6 of the 7 folds I listed during the run (0, 2, 3, 2, 4, 2 and 4 discards).
+- **`apis`: no effect by the criterion**, but every metric but recall points the wrong way (alerts 6.28 against 2.53, interval -1.6 to +12.1).
+- **`guard` + `apis`: an effect, and a harmful one.** Recall is 97.5% and the rules are wide: 101 false positives on the Juliet files and 17
+  alerts per KLOC (the expectation was "no more than the sum of the two"; it is worse than either).
+
+What the `apis` rules did with the list (descriptive, 47 valid attempts of the 10 folds): 35 of them name project functions; 27 name the same
+ten release wrappers together (`reftable_free`, `re_free`, `closedir`, `bitmap_free`...), that is, the model copied the list into the event of
+the rule; `FREE_AND_NULL` appears in 33 attempts although the prompt says it clears the variable. The hypothesis behind the option was also
+weak: in the 51 alerts of `docs/alert_review_seed1_fold2_attempt6.csv`, 4 involve `FREE_AND_NULL` (as a different object freed) and none is
+a wrapper that cleared the pointer. More sources mean more matches, and the Juliet recall rises with them.
+
+Secondary metrics (descriptive, 70 attempts per side for the options; 175 for `nodiag`):
+
+| | baseline (seeds 1, 2) | `guard` | `apis` | `guard` + `apis` | baseline (5 seeds) | `nodiag` (5 seeds) |
+|---|---|---|---|---|---|---|
+| attempts that repeat an earlier rule | 0 (0.0%) | 5 (7.1%) | 7 (10.0%) | 3 (4.3%) | 12 (6.9%) | 21 (12.0%) |
+| attempts that reach the gate | 82.9% | 71.4% | 67.1% | 74.3% | 74.3% | **60.0%** |
+| mean position of the best attempt | 3.8 | 2.5 | 4.0 | 4.2 | 3.38 | 2.29 |
+| median seconds per call | 47 | 43 | 63 | 60 | 47 | 45 |
+
+**Correction to the `history` comparison above.** The repeated rules "from 0 of 70 to 8 of 70" compared the history runs with the baseline of
+the same two seeds, where there happened to be none. On the five seeds the baseline repeats 12 of 175 attempts (6.9%), and `history` has 8 of
+70 (11.4%): the difference is within what the seeds vary by. The statement that the model "does not use the history to avoid what failed" rests on
+that number and should be read as "no evidence that it does".
