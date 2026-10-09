@@ -53,6 +53,7 @@ Only `search` OR `taint` (never both). `inside`, `not`, `not_inside`, `sanitizer
 
 {{EXAMPLES}}
 
+{{PROJECT_APIS}}
 ### Requirements
 
 - The rule must detect the weakness in any C code, not only in these examples. Use metavariables (`$P`, `$X`, `$F`...) instead of variable or function names from the examples.

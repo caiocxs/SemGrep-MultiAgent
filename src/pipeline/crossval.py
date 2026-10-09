@@ -86,7 +86,8 @@ def format_table(summary):
     return "\n".join(lines)
 
 
-DEFAULT_ROLES = {"history": False, "critic": False, "merge": False, "example_mode": "findings", "diagnose": True}
+DEFAULT_ROLES = {"history": False, "critic": False, "merge": False, "example_mode": "findings", "diagnose": True,
+                 "guard": False, "project_apis": False}
 
 
 def _expected(kwargs):
@@ -105,7 +106,7 @@ def _matches(run, cwe, combo, folds, expected):
     return (run.get("cwe") == cwe and run.get("combo") == combo and run.get("folds") == folds
             and run.get("fold") is not None and run.get("format") == expected["format"]
             and run.get("seed") == expected["seed"] and run.get("docs", True) == expected["docs"]
-            and run.get("roles", DEFAULT_ROLES) == expected["roles"] and negatives == expected["negatives"])
+            and {**DEFAULT_ROLES, **run.get("roles", {})} == expected["roles"] and negatives == expected["negatives"])
 
 
 def find_finished_folds(logs_dir, combo, cwe, folds, since, kwargs):
@@ -161,9 +162,7 @@ def run_folds(cwe, combo_name, folds, complete=None, rules_dir=Path("rules/cross
     summary.update(cwe=cwe, combo=combo_name, run=stamp, seed=kwargs.get("seed", 0),
                    format=kwargs.get("output_format", "yaml"), negatives=kwargs.get("negatives"),
                    docs=kwargs.get("docs", True),
-                   roles={k: kwargs.get(k, default) for k, default in (
-                       ("history", False), ("critic", False), ("merge", False),
-                       ("example_mode", "findings"), ("diagnose", True))})
+                   roles={k: kwargs.get(k, default) for k, default in DEFAULT_ROLES.items()})
     out = Path(crossval_dir) / combo_name / cwe / f"{stamp}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(summary, indent=4, ensure_ascii=False), encoding="utf-8")
@@ -194,6 +193,8 @@ def main():
     parser.add_argument("--merge", action="store_true")
     parser.add_argument("--example-mode", choices=("findings", "pairs", "none"), default="findings")
     parser.add_argument("--no-diagnosis", action="store_true")
+    parser.add_argument("--guard", action="store_true")
+    parser.add_argument("--project-apis", action="store_true")
     parser.add_argument("--resume-since", default=None, metavar="YYYYMMDD-HHMMSS",
                         help="Reuse the folds an interrupted run already finished (same combo, seed, options; run id not older than this)")
     args = parser.parse_args()
@@ -206,6 +207,7 @@ def main():
         negatives=args.negatives, max_negative_rate=args.max_negative_rate,
         max_negative_files=args.negatives_max_files, docs=not args.no_docs, history=args.history,
         critic=args.critic, merge=args.merge, example_mode=args.example_mode, diagnose=not args.no_diagnosis,
+        guard=args.guard, project_apis=args.project_apis,
     )
 
 

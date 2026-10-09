@@ -342,3 +342,24 @@ Notes to declare:
   results of these comparisons.
 - Tests: `tests/test_roles.py` (21, with a fake model and a fake gate, no Semgrep), `tests/test_compare.py` (8), a prompt test per
   format for `--no-docs`. The full suite (141 tests, with Semgrep) passed on 2026-10-08.
+
+## Phase 16 - changes taken from the related work (2026-10-08)
+
+After reading Hou et al. (QRS 2025), KNighter (SOSP 2025) and Li et al. (arXiv 2601.19239), two changes that attack the open problem
+(alerts on real code) without changing a principle. Both are off by default, so no earlier result changes, and both are
+exploratory: they were not in `docs/ablation_plan.md`, which was written before them.
+
+| # | Change | Where |
+|---|---|---|
+| 42 | `--guard`: the corrector always edits the best rule so far. A correction whose `_score` is lower than that rule's stays in the log (`discarded: true`) but is not built upon: the corrector gets the best rule again, with a note saying what the discarded change did to the recall and the alerts. KNighter accepts a refinement only if the checker keeps what it had; before, our corrector rewrote the whole rule and the best attempt was chosen only at the end (for example the `nodiag` runs, which ended with recall 100% and 174 false positives) | `roles.py` (`regression_note`), `synthesize.py` |
+| 43 | `--project-apis`: the prompts list the memory functions the `--negatives` project defines: functions and macros that free a pointer argument, those that also set it to NULL (`FREE_AND_NULL`) and those that return new memory (`xmalloc`, `ALLOC_ARRAY`). Found with regular expressions, no model; wrappers of wrappers are followed. Li et al. trace most misses and false alarms to sources and sinks that do not match the project's APIs. On the Git clone it finds, among others, `FREE_AND_NULL`, `xmalloc`, `xcalloc` and `ALLOC_ARRAY` in 3 s | `project_apis.py`, the six generator and corrector prompts |
+
+Notes to declare:
+- `--project-apis` makes the rule specific to the project in `--negatives`. The text is project knowledge, not a rule and not an example,
+  but a result with it is a result for that project and must be reported apart from the others. The scan reads the definitions in the .c and .h
+  files of the whole folder, test side included (definitions, not alerts).
+- The inventory is heuristic. It follows only direct frees of a pointer parameter in short bodies (a `realloc` wrapper that frees on one path
+  is left out), and some of what it lists is not a wrapper in the strict sense (a function that takes ownership of its argument).
+- `--guard` uses the same `_score` that picks the final best attempt, so it changes which rule the corrector sees, not which rule wins.
+- Tests: `tests/test_guard.py` (6) and `tests/test_project_apis.py` (11), with a fake model and a fake gate. The full suite (158 tests)
+  passed on 2026-10-08.

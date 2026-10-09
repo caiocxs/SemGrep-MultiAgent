@@ -47,7 +47,7 @@ def test_summary_of_an_invalid_rule_names_semgreps_error():
 
 def test_render_drops_an_empty_marker_line_and_fills_a_filled_one():
     common = dict(CWE_ID="CWE-416", CWE_NAME="n", CWE_DESCRIPTION="d", PATTERN_DOCS="docs", RULE="{}",
-                  FEEDBACK="the result", MISSED_CODE="(none)")
+                  FEEDBACK="the result", MISSED_CODE="(none)", PROJECT_APIS="")
     plain = render("template_corrector", **common, HISTORY="")
     assert "{{" not in plain and "### Test result\n\nthe result\n\n### Vulnerable code" in plain
 

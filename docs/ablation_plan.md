@@ -58,3 +58,18 @@ to make; with 10 folds the intervals are wide and a null result means "not detec
 
 About 50 minutes per seed with the 30B model, so about 100 minutes per experiment with two seeds and about 14 hours for the eight that use it; the two small-model experiments take minutes.
 `scripts/run_ablation_queue.ps1` runs them one after another and waits for free RAM (about 20 GB) before each.
+
+## Exploratory additions (written on 2026-10-08, after the comparisons above were planned)
+
+Two changes taken from the related work (`docs/changes.md`, phase 16). They are not part of the pre-registered list: whatever they show is
+exploratory, and any effect must be repeated on other seeds before it is claimed.
+
+| Name | What changes | Combo | Expectation, written before running |
+|---|---|---|---|
+| `guard` | the corrector always edits the best rule so far; worse corrections are discarded | D | fewer alerts/KLOC in the final rule than B0, because the best rule no longer gets lost; recall about the same |
+| `apis` | the prompts list the memory functions the project defines | D | fewer alerts/KLOC on the real-world files; the effect, if any, is in the alerts after `FREE_AND_NULL`-style wrappers, not in the Juliet recall |
+| `guardapis` | both | D | no more than the sum of the two; only run if one of them shows something |
+
+Same criterion as the other rows: an effect is claimed only if the interval excludes 0 and the difference reaches 0.10 in recall or 25% of
+the alerts. The comparison with B0 uses the same seeds (1 and 2) and `compare --grouped`. `apis` is a project-specific configuration: its
+result is not comparable to a rule meant for any C code.

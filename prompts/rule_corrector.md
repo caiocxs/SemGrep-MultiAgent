@@ -25,6 +25,7 @@ It was tested against vulnerable and safe C code and failed. Fix it.
 
 {{MISSED_CODE}}
 
+{{PROJECT_APIS}}
 ### Requirements
 
 - The rule must detect the weakness in any C code, not only in this code. Use metavariables (`$P`, `$X`, `$F`...) instead of variable or function names from the code.

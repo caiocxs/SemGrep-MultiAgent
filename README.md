@@ -275,7 +275,7 @@ how often a model can write a valid rule.
 The roles around the loop are options of `synthesize` and `crossval` (all off by default): `--history` (the corrector sees the
 earlier attempts), `--critic` (an agent reviews each tested rule), `--merge` (a final attempt combines two rules),
 `--example-mode findings|pairs|none`, `--no-docs` (no Semgrep documentation in the prompts) and `--no-diagnosis` (no structural
-diagnoses in the gate feedback). `configs/combos/combo_e.toml` uses one 30B model in every role. A cross-validation stopped half way (for example by low memory) can be continued with `--resume-since YYYYMMDD-HHMMSS`
+diagnoses in the gate feedback). Two options taken from the related work: `--guard` (the corrector always edits the best rule so far; a correction that scores worse is discarded) and `--project-apis` (the prompts list the memory functions the `--negatives` project defines, such as `FREE_AND_NULL`; it makes the rule specific to that project). `configs/combos/combo_e.toml` uses one 30B model in every role. A cross-validation stopped half way (for example by low memory) can be continued with `--resume-since YYYYMMDD-HHMMSS`
 (`-ResumeSince` in the scripts): the folds it already finished are reused and only the missing ones run.
 The cross-validation summaries (the per-fold numbers behind `docs/findings.md`) are copied from `logs/` to the versioned
 `results/crossval/` with `python scripts/export_results.py`. Two configurations run on the

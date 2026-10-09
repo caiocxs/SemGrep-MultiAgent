@@ -40,6 +40,7 @@ You write only the patterns. The program builds the Semgrep rule from them.
 
 {{EXAMPLES}}
 
+{{PROJECT_APIS}}
 ### Requirements
 
 - The rule must detect the weakness in any C code, not only in these examples. Use metavariables (`$P`, `$X`, `$F`...) instead of variable or function names from the examples.

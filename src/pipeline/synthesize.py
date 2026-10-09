@@ -32,6 +32,7 @@ from src.config import load_combo
 from src.pipeline import roles
 from src.pipeline.findings import load_findings, number_lines, render_example, select_examples
 from src.pipeline.gate import collect_files, evaluate
+from src.pipeline.project_apis import describe as describe_project
 from src.pipeline.rules import dump_rule, forbidden_identifiers, parse_response, write_rule
 from src.pipeline.spec import parse_response as parse_spec_response
 from src.pipeline.spec import parse_template_response
@@ -123,7 +124,8 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
                logs_dir=Path("logs/synthesis"), max_fix_attempts=None, output_format="yaml",
                samples=1, temperature=None, stop_on_pass=False,
                negatives=None, max_negative_rate=0.1, max_negative_files=None, fold=None, folds=None,
-               docs=True, history=False, critic=False, merge=False, example_mode="findings", diagnose=True):
+               docs=True, history=False, critic=False, merge=False, example_mode="findings", diagnose=True,
+               guard=False, project_apis=False):
     """
     Runs the loop for one CWE and returns the run log (also written to disk).
     `complete(role, prompt) -> (text, seconds)` defaults to the combo's local
@@ -152,6 +154,12 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
     any attempt). `example_mode` is what the generator is shown: the detector's "findings", vulnerable/safe
     "pairs" from the dataset's labels, or "none". `diagnose=False` turns off the structural diagnoses in the gate
     feedback (see gate.evaluate).
+
+    `guard` makes the corrector always edit the best rule so far: a correction whose `_score` is lower than that
+    rule's is kept in the log but discarded, and the corrector gets the best rule again with a note on what failed
+    (KNighter's refinement accepts a change only when it does not lose what the checker already had).
+    `project_apis` adds to the prompts the memory functions the project in `negatives` defines (see project_apis.py):
+    the rule becomes specific to that project.
 
     `docs=False` leaves the Semgrep documentation out of the generator and corrector prompts
     (NO_DOCS_NOTE takes its place), to measure what that text contributes. In the spec and
@@ -204,7 +212,13 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         raise RuntimeError(f"No {cwe} findings in {', '.join(map(str, log_dirs))} for the train files.")
 
     cwe_name, cwe_description = CWES[cwe]
-    common = dict(CWE_ID=cwe, CWE_NAME=cwe_name, CWE_DESCRIPTION=cwe_description)
+    common = dict(CWE_ID=cwe, CWE_NAME=cwe_name, CWE_DESCRIPTION=cwe_description, PROJECT_APIS="")
+    if project_apis:
+        if not negatives:
+            raise ValueError("project_apis needs negatives (the project to read the functions from)")
+        common["PROJECT_APIS"] = describe_project(negatives)
+        print(f"Project functions in the prompts: {len(common['PROJECT_APIS'].splitlines())} lines"
+              if common["PROJECT_APIS"] else "No project memory functions found.")
     docs_text = (load_pattern_docs() if spec_mode else load_docs()) if docs else NO_DOCS_NOTE
     common["PATTERN_DOCS" if spec_mode else "SEMGREP_DOCS"] = docs_text
     forbidden = forbidden_identifiers(examples)
@@ -290,18 +304,28 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         """One independent generator -> gate -> corrector loop (and, with `merge`, a final merge); returns its attempts."""
         prompt, role = first_prompt, "generator"
         attempts, seen = [], {}  # seen: rule text -> (attempt number, its feedback)
+        base = None  # with `guard`: (attempt, feedback) of the best tested rule so far
         for n in range(max_fix_attempts + 1):
             attempt, feedback = step(k, n, role, prompt, seen)
             attempts.append(attempt)
             if attempt["passed"]:
                 break
-            report, review = attempt["report"], ""
+            # The rule the corrector is given: this attempt, or with `guard` the best one when this one did not improve on it.
+            source, source_feedback, review = attempt, feedback, ""
+            if guard and attempt["report"] is not None and attempt["report"].valid:
+                if base is not None and _score(attempt) < _score(base[0]):
+                    attempt["discarded"] = True
+                    source, source_feedback = base[0], roles.regression_note(attempt, base[0]) + "\n\n" + base[1]
+                    print(f"[{n}] discarded: worse than attempt {base[0]['n']}")
+                else:
+                    base = (attempt, feedback)
+            report = source["report"]
             if critic and report is not None and report.valid:
-                review = review_by_critic(attempt, feedback, attempts)
+                review = review_by_critic(source, source_feedback, attempts)
                 attempt["review"] = review
-            prompt = render(corrector_template, **common, FEEDBACK=roles.with_review(feedback, review),
+            prompt = render(corrector_template, **common, FEEDBACK=roles.with_review(source_feedback, review),
                             HISTORY=roles.history_block(attempts[:-1]) if history else "",
-                            MISSED_CODE=missed_code(report), RULE=attempt["rule_source"])
+                            MISSED_CODE=missed_code(report), RULE=source["rule_source"])
             role = "corrector"
 
         if merge and not attempts[-1]["passed"]:
@@ -344,7 +368,8 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
     run = {
         "run_id": run_id, "cwe": cwe, "combo": combo["name"], "seed": seed, "format": output_format, "min_recall": min_recall,
         "fold": fold, "folds": folds, "docs": docs,
-        "roles": {"history": history, "critic": critic, "merge": merge, "example_mode": example_mode, "diagnose": diagnose},
+        "roles": {"history": history, "critic": critic, "merge": merge, "example_mode": example_mode, "diagnose": diagnose,
+                  "guard": guard, "project_apis": project_apis},
         "models": {r: combo["roles"][r]["model"]["name"]
                    for r in ("generator", "corrector") + (("critic",) if critic else ()) + (("merger",) if merge else ())},
         "split": {"test_variants": test_variants, "train_bad": len(train_bad), "train_good": len(train_good),
@@ -417,6 +442,10 @@ def main():
                         help="What the generator is shown: the detector's findings, vulnerable/safe file pairs, or nothing")
     parser.add_argument("--no-diagnosis", action="store_true",
                         help="Turn off the structural diagnoses in the gate feedback (to compare them with --critic)")
+    parser.add_argument("--guard", action="store_true",
+                        help="The corrector always edits the best rule so far; a correction that scores worse is discarded")
+    parser.add_argument("--project-apis", action="store_true",
+                        help="Tell the prompts which memory functions the --negatives project defines (makes the rule project-specific)")
     parser.add_argument("--no-docs", action="store_true",
                         help="Leave the Semgrep documentation out of the generator and corrector prompts (ablation)")
     args = parser.parse_args()
@@ -431,6 +460,7 @@ def main():
         max_negative_files=args.negatives_max_files, fold=args.fold, folds=args.folds,
         rules_dir=Path(args.rules_dir), docs=not args.no_docs, history=args.history, critic=args.critic,
         merge=args.merge, example_mode=args.example_mode, diagnose=not args.no_diagnosis,
+        guard=args.guard, project_apis=args.project_apis,
     )
 
 

@@ -51,6 +51,18 @@ def history_block(attempts, limit=6):
     return "### Earlier attempts (oldest first)\n\n" + "\n".join(lines) + "\n\nDo not go back to a rule that already failed.\n"
 
 
+# --------------------------------------------------------------------------- guard
+def regression_note(attempt, base):
+    """
+    Told to the corrector when its change scored worse than the rule it was editing. Like KNighter's refinement, which
+    accepts a change only if the checker stays valid and loses its false positives, a correction that does not improve
+    on the best rule so far is not built upon: the corrector goes back to that rule.
+    """
+    return (f"Your last change (attempt {attempt['n']}) made the rule worse and was discarded: "
+            f"{attempt_summary(attempt)}. The rule below is attempt {base['n']} ({attempt_summary(base)}), "
+            "which is the best one so far. Change a different part of it.")
+
+
 # --------------------------------------------------------------------------- critic
 def with_review(feedback, review):
     """The corrector's feedback plus the critic's review, which is presented as fallible."""
