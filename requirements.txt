@@ -11,3 +11,7 @@ pytest>=8.0
 
 # semgrep is installed separately via pipx (CLI tool, not imported as a library):
 #   pipx install semgrep>=1.174.0
+
+# Event-graph analyzer (src/graph)
+tree-sitter>=0.23
+tree-sitter-c>=0.23
