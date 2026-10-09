@@ -183,7 +183,7 @@ On seed 2, the only seed with two 30B configurations on the same folds: v1 + war
 |---|---|---|
 | `nodocs` | no Semgrep documentation in the prompts | done, 10 paired folds: no effect by the plan's criterion (recall +0.024, interval -0.10 to +0.16); alerts/KLOC -0.88 in 7 of 10 folds, exploratory (interval -2.8 to +1.0) |
 | `history` | the corrector sees the earlier attempts | done, 10 paired folds: no effect detected (recall +0.010, interval -0.04 to +0.08); repeated rules rose from 0/70 to 8/70 attempts (exploratory) |
-| `nodiag` | structural diagnoses of the gate off | not run |
+| `nodiag` | structural diagnoses of the gate off | done, 10 paired folds: recall +0.119 (interval +0.006 to +0.235), alerts +0.19 (interval -1.2 to +1.6); the recall difference meets the criterion and must be re-run on seeds 0, 3 and 4 before it is a finding; valid attempts 57% against 83% |
 | `critic` | a critic agent reviews each tested rule | not run |
 | `criticnodiag` | the critic instead of the diagnoses | not run |
 | `merge` | a final attempt merges the best and a complementary rule | not run |

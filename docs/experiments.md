@@ -887,3 +887,43 @@ The repeats went the opposite way to the expectation of the plan ("fewer repeate
 are not independent, and this is one of several secondary metrics, so it is an observation and not a finding; a possible reading is that
 listing the failed attempts with their numbers makes the model return to one of them. The history block also makes the prompt
 longer (median 8,664 against 8,443 characters) and raises the use of `not_inside`, without lowering the alert rate.
+
+## Comparison `nodiag`: the structural diagnoses of the gate are off (2026-10-08)
+
+`scripts/run_ablation_queue.ps1 -Only nodiag -MinFreeGB 18` (combo E, `--no-diagnosis`, seeds 1 and 2, both completed). Summaries `results/crossval/E/CWE-416/20261008-222414.json` (seed 1: accepted 0/5, recall
+85.7%, precision 82.1%, 3.73 alerts/KLOC) and `20261008-231028.json` (seed 2: accepted 0/5, recall 81.3% +- 13.6, precision 92.0% +- 10.9,
+1.72 alerts/KLOC). The summaries of the baseline (seeds 1 and 2 of 2026-10-06) were written before the options were recorded, so their
+configuration is known from this log and not from the file.
+
+Paired with the final configuration on the same seeds (10 folds), `python -m src.pipeline.compare`:
+
+| Metric | baseline | nodiag | nodiag - baseline | 95% interval | nodiag better / worse (folds) |
+|---|---|---|---|---|---|
+| recall | 0.716 | 0.835 | **+0.119** | +0.006 to +0.235 | 5 / 2 |
+| precision | 0.894 | 0.871 | -0.024 | -0.154 to +0.107 | 1 / 3 |
+| Juliet false positives | 9.0 | 9.6 | +0.6 | -12.0 to +13.2 | 1 / 2 |
+| real-world alerts/KLOC | 2.533 | 2.725 | +0.192 | -1.240 to +1.608 | 4 / 5 |
+| accepted folds | 0 | 0 | 0 | - | - |
+
+By the criterion of the plan (interval excludes 0 and the difference reaches 0.10 recall) **the recall difference counts as an effect to
+be repeated**, and it goes the opposite way to the expectation of the plan: the plan expected more alerts without the diagnoses, and the
+alerts did not change (the interval spans 0 by a wide margin). The lower end of the recall interval is +0.006 with 10 paired folds, five of
+them better and two worse, so the result is fragile. As the plan says for every effect found here, it is **not** written as a finding
+until it is re-run on seeds 0, 3 and 4.
+
+Secondary metrics (descriptive, 70 attempts per side):
+
+| | baseline | nodiag |
+|---|---|---|
+| attempts that repeat an earlier rule | 0 (0.0%) | 5 (7.1%) |
+| attempts that reach the gate (valid) | 58 (82.9%) | **40 (57.1%)** |
+| attempts with a `not_inside` | 25 (35.7%) | 26 (37.1%) |
+| best attempt after the 3rd try | 8/10 folds | 3/10 |
+| mean position of the best attempt | 3.8 | 2.1 |
+| median seconds per model call | 47 | 48 |
+
+Without the diagnoses fewer attempts are valid (57% against 83%) and the best attempt comes earlier (position 2.1 against 3.8): the
+corrector with less to read often breaks the rule, and the loop keeps the early rule, which has the higher recall. One reading is that the
+diagnoses (the source-line warning and the ineffective-`not` message) push the model toward narrower rules, which costs recall without
+lowering the alerts. This is a reading of descriptive numbers, not a result. In the run logs several attempts have recall 100% with 174-180 false positives on the Juliet files (seen in the output of the
+run, not counted): `--guard` is meant for that case.
