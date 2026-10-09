@@ -1,0 +1,30 @@
+# Combo H - same as combo G but Gemini (GOOGLE_MODEL; two keys rotate on 429). Free tier is slow (few requests per minute).
+# Same loop as combo D; the generator and the corrector call an API instead of a local GGUF. It is a separate arm of the study
+# (a 120B hosted model is not a small local one, principle 1) and measures how the rate limits shape the run. The
+# provider, model and keys are read from .env; the detector is not used by the synthesis, and the critic and merger are
+# off by default (the same provider is set so the combo loads).
+
+name = "H"
+description = "Gemini (GOOGLE_MODEL) generates and corrects over the API, rate limited; the other roles are unused"
+target_gpu = "none (remote)"
+
+[defaults]
+temperature = 0.0
+provider = "gemini"
+min_interval = 7.0        # seconds between calls (free tier allows only a few requests per minute)
+
+max_tokens = 4096
+
+[loop]
+max_fix_attempts = 3
+
+[roles.detector]
+
+[roles.generator]
+
+[roles.corrector]
+temperature = 0.2
+
+[roles.critic]
+
+[roles.merger]

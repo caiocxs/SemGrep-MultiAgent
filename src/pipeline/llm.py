@@ -18,6 +18,7 @@ class LocalLLM:
         self.combo = combo
         self._llm = None
         self._loaded = None
+        self._remote = None
 
     def _load(self, settings):
         key = (str(settings["path"]), settings["n_ctx"], settings["n_gpu_layers"])
@@ -57,6 +58,11 @@ class LocalLLM:
         rejects like any other malformed answer.
         """
         settings = self.combo["roles"][role]
+        if settings.get("provider"):  # remote role (see remote.py): no local model involved
+            if self._remote is None:
+                from src.pipeline.remote import RemoteLLM
+                self._remote = RemoteLLM()
+            return self._remote.complete(role, settings, prompt, temperature=temperature, max_seconds=max_seconds)
         self._load(settings)
         limit = max_seconds or settings.get("max_seconds", DEFAULT_MAX_SECONDS)
         start = time.time()

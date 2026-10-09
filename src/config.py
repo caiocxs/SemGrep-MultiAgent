@@ -42,6 +42,11 @@ def load_combo(name):
         if role not in combo.get("roles", {}):
             raise KeyError(f"Combo {name} does not define role '{role}'")
         settings = {**combo.get("defaults", {}), **combo["roles"][role]}
+        if settings.get("provider"):  # remote role: no GGUF, the model comes from .env (src/pipeline/remote.py)
+            settings["model"] = {"key": settings["provider"], "name": settings["provider"], "quant": "api", "size_gb": 0}
+            settings["path"] = None
+            roles[role] = settings
+            continue
         key = settings["model"]
         if key not in catalog:
             raise KeyError(f"Combo {name}, role {role}: model '{key}' not in models.toml")
@@ -92,8 +97,8 @@ def main():
     missing = {}
     for role, s in combo["roles"].items():
         m = s["model"]
-        status = "ok" if s["path"].exists() else "MISSING"
-        print(f"  {role:<10} {m['name']} ({m['quant']}, {m['size_gb']} GB) n_ctx={s['n_ctx']} [{status}]")
+        status = "remote" if s["path"] is None else "ok" if s["path"].exists() else "MISSING"
+        print(f"  {role:<10} {m['name']} ({m['quant']}, {m['size_gb']} GB) n_ctx={s.get('n_ctx', '-')} [{status}]")
         if status == "MISSING":
             missing[m["file"]] = m
 
