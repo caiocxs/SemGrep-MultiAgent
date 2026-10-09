@@ -43,6 +43,10 @@ $experiments = [ordered]@{
     none         = @{ Combo = "D"; Extra = @("--example-mode", "none") }
     qwen4b       = @{ Combo = "C"; Extra = @(); Ram = 6 }   # the 4B model with the final configuration
     phi4         = @{ Combo = "F"; Extra = @(); Ram = 6 }   # a second model family, same size class as the 4B
+    # exploratory, not in the pre-registered plan (docs/ablation_plan.md, last section)
+    guard        = @{ Combo = "D"; Extra = @("--guard") }
+    apis         = @{ Combo = "D"; Extra = @("--project-apis") }
+    guardapis    = @{ Combo = "D"; Extra = @("--guard", "--project-apis") }
 }
 
 # "-Only a,b" arrives as one string when the script is started with `powershell -File`: split it.
