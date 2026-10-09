@@ -19,7 +19,8 @@ load_dotenv()
 
 USAGE_LOG = Path("logs/remote_usage.jsonl")
 MAX_RETRIES = 8
-MAX_WAIT = 120  # seconds; a longer Retry-After usually means the daily quota is gone
+MAX_WAIT = 120  # seconds, for the exponential backoff when the provider gives no Retry-After
+MAX_RETRY_AFTER = 900  # a Retry-After longer than this (15 min) is treated as the daily quota being gone: stop instead of waiting
 
 # provider -> (env var(s) with the API key(s), model var, base URL var). More than one key rotates on 429.
 PROVIDERS = {
@@ -63,6 +64,7 @@ class RemoteLLM:
         waited = 0.0
         retries = 0
         status = "ok"
+        detail = ""
         usage = {}
         text = ""
         while True:
@@ -84,7 +86,7 @@ class RemoteLLM:
                 break
             except urllib.error.HTTPError as error:
                 retry_after = error.headers.get("Retry-After")
-                error.read()
+                detail = error.read().decode("utf-8", errors="replace")[:300]
                 if error.code not in (429, 500, 502, 503, 504) or retries >= MAX_RETRIES:
                     status = f"http {error.code}"
                     break
@@ -95,10 +97,10 @@ class RemoteLLM:
                     pause = float(retry_after)
                 else:
                     pause = min(2 ** retries * 2, MAX_WAIT)
-                if pause > MAX_WAIT:
+                if pause > MAX_RETRY_AFTER:
                     status = f"quota (retry-after {pause:.0f}s)"
                     break
-                print(f"  {role}: {provider} http {error.code}, waiting {pause:.0f}s (retry {retries})")
+                print(f"  {role}: {provider} http {error.code}, waiting {pause:.0f}s (retry {retries}) {detail[:160]}")
                 time.sleep(pause)
                 waited += pause
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError) as error:
@@ -110,16 +112,18 @@ class RemoteLLM:
                 time.sleep(pause)
                 waited += pause
         seconds = time.time() - start
-        self._log(provider, role, body["model"], usage, seconds, waited, retries, status)
+        self._log(provider, role, body["model"], usage, seconds, waited, retries, status, detail)
         if status.startswith("quota"):
             raise QuotaExhausted(f"{provider}: {status}")
         return text, seconds
 
     @staticmethod
-    def _log(provider, role, model, usage, seconds, waited, retries, status):
+    def _log(provider, role, model, usage, seconds, waited, retries, status, detail=""):
         USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
         line = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "provider": provider, "model": model, "role": role,
                 "prompt_tokens": usage.get("prompt_tokens"), "completion_tokens": usage.get("completion_tokens"),
                 "seconds": round(seconds, 1), "waited": round(waited, 1), "retries": retries, "status": status}
+        if detail and status != "ok":
+            line["detail"] = detail  # the provider's error message (which limit was hit); never contains the key
         with USAGE_LOG.open("a", encoding="utf-8") as out:
             out.write(json.dumps(line) + "\n")
