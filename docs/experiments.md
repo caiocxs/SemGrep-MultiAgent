@@ -849,3 +849,41 @@ Reading: the 1,278 characters of pattern syntax in the prompt are not what decid
 the plan; the trajectory of a deterministic run changes with any change of the prompt, so single folds can move a lot in both
 directions without that being an effect of the documentation. A null result on 10 folds means "not detected" (recall spread over
 folds is about 0.2).
+
+## Comparison `history`: the corrector sees the earlier attempts (2026-10-08)
+
+`scripts/run_ablation_queue.ps1 -Only history -MinFreeGB 18` (combo D, final configuration plus `--history`, seeds 1 and 2, both
+completed without a stop). Summaries `results/crossval/D/CWE-416/20261008-204035.json` (seed 1: accepted 0/5, recall 75.6% +- 17.1,
+precision 93.3%, 1.62 +- 0.53 alerts/KLOC) and `20261008-212828.json` (seed 2: accepted 0/5, recall 69.5% +- 23.7, precision 87.4%,
+2.58 +- 2.25). The recorded options confirm `history: true` and nothing else.
+
+Paired with the final configuration on the same seeds (10 folds), `python -m src.pipeline.compare`:
+
+| Metric | baseline | history | history - baseline | 95% interval | history better / worse (folds) |
+|---|---|---|---|---|---|
+| recall | 0.716 | 0.726 | +0.010 | -0.041 to +0.078 | 1 / 2 |
+| precision | 0.894 | 0.904 | +0.010 | -0.005 to +0.034 | 1 / 1 |
+| Juliet false positives | 9.0 | 6.0 | -3.0 | -9.0 to +0.0 | 1 / 0 |
+| real-world alerts/KLOC | 2.533 | 2.102 | -0.431 | -1.595 to +0.420 | 4 / 5 |
+| accepted folds | 0 | 0 | 0 | - | - |
+
+**No effect was detected** by the criterion of the plan (every interval includes 0 and no difference reaches 0.10 recall or 25% of the
+alerts with an interval that excludes 0). Eight of the ten folds have the same recall within 0.02; the folds that differ move in both
+directions (seed 1 fold 1 recall 0.57 to 0.86; seed 1 fold 3 false positives 42 to 12; seed 1 fold 2 alerts 0.10 to 1.82: the near-miss
+of the baseline did not reappear, and a changed prompt changes the whole trajectory of a deterministic run).
+
+Secondary metrics (descriptive, 70 attempts per side; `python scripts/secondary_metrics.py`):
+
+| | baseline | history |
+|---|---|---|
+| attempts that repeat an earlier rule | 0 (0.0%) | **8 (11.4%)** |
+| attempts that reach the gate (valid) | 58 (82.9%) | 52 (74.3%) |
+| attempts with a `not_inside` | 25 (35.7%) | 38 (54.3%) |
+| best attempt after the 3rd try | 8/10 folds | 7/10 folds |
+| mean position of the best attempt | 3.8 | 3.2 |
+| median seconds per model call | 47 | 48 |
+
+The repeats went the opposite way to the expectation of the plan ("fewer repeated rules"): 8 of 70 against 0 of 70. The attempts of one fold
+are not independent, and this is one of several secondary metrics, so it is an observation and not a finding; a possible reading is that
+listing the failed attempts with their numbers makes the model return to one of them. The history block also makes the prompt
+longer (median 8,664 against 8,443 characters) and raises the use of `not_inside`, without lowering the alert rate.

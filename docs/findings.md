@@ -83,6 +83,10 @@ real-world files: they are not paired.
    real-world alert rate was lower without it in 7 of 10 folds (-0.88 alerts/KLOC, interval -2.8 to +1.0), partly through broad rules
    with more Juliet false positives; by the pre-registered criterion that is not an effect, and it would have to be re-run on other
    seeds. The template prompt already carries the strategy, so the documentation adds little.
+11. **Showing the corrector its earlier attempts does not help.** With a summary of the earlier attempts and their numbers in the prompt,
+   10 paired folds give recall +0.010 (95% interval -0.04 to +0.08), precision +0.010 and real-world alerts -0.43 per KLOC (interval
+   -1.6 to +0.4): no effect by the pre-registered criterion. The attempts that repeat an earlier rule went up from 0 of 70 to 8 of 70
+   (exploratory, descriptive metric): the model does not use the history to avoid what failed.
 
 ## Threats to validity and limits
 
@@ -106,5 +110,5 @@ real-world files: they are not paired.
 ## Not done
 
 Evaluation of the critic, merger, history and example-mode options (implemented, with a plan in `docs/ablation_plan.md`;
-the documentation ablation is done, the rest is pending); the other CWEs (401, 457, 476); a second model family; CVE-fix evaluation beyond the 16 Git commits;
+the documentation and history comparisons are done, the rest is pending); the other CWEs (401, 457, 476); a second model family; CVE-fix evaluation beyond the 16 Git commits;
 interprocedural flows (Semgrep OSS); the 4B model (combo C) with the final configuration.

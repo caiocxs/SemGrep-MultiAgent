@@ -1,0 +1,113 @@
+{
+    "folds": [
+        {
+            "fold": 0,
+            "test_variants": [
+                "06",
+                "08",
+                "15",
+                "16"
+            ],
+            "accepted": false,
+            "best_attempt": 1,
+            "has_rule": true,
+            "recall": 1.0,
+            "precision": 0.5714,
+            "false_positives": 42,
+            "real_world_rate": 6.3789,
+            "run_id": "20261008-212829"
+        },
+        {
+            "fold": 1,
+            "test_variants": [
+                "05",
+                "07",
+                "12",
+                "14"
+            ],
+            "accepted": false,
+            "best_attempt": 1,
+            "has_rule": true,
+            "recall": 0.5714,
+            "precision": 1.0,
+            "false_positives": 0,
+            "real_world_rate": 0.3674,
+            "run_id": "20261008-214435"
+        },
+        {
+            "fold": 2,
+            "test_variants": [
+                "01",
+                "11",
+                "18",
+                "63"
+            ],
+            "accepted": false,
+            "best_attempt": 3,
+            "has_rule": true,
+            "recall": 0.4444,
+            "precision": 1.0,
+            "false_positives": 0,
+            "real_world_rate": 1.8761,
+            "run_id": "20261008-215337"
+        },
+        {
+            "fold": 3,
+            "test_variants": [
+                "03",
+                "04",
+                "09",
+                "13"
+            ],
+            "accepted": false,
+            "best_attempt": 6,
+            "has_rule": true,
+            "recall": 0.5714,
+            "precision": 1.0,
+            "false_positives": 0,
+            "real_world_rate": 2.1654,
+            "run_id": "20261008-220405"
+        },
+        {
+            "fold": 4,
+            "test_variants": [
+                "02",
+                "10",
+                "17",
+                "64"
+            ],
+            "accepted": false,
+            "best_attempt": 3,
+            "has_rule": true,
+            "recall": 0.8889,
+            "precision": 0.8,
+            "false_positives": 6,
+            "real_world_rate": 2.1107,
+            "run_id": "20261008-221257"
+        }
+    ],
+    "accepted_folds": 0,
+    "folds_with_rule": 5,
+    "recall_mean": 0.6952,
+    "recall_sd": 0.2366,
+    "precision_mean": 0.8743,
+    "precision_sd": 0.1902,
+    "real_world_rate_mean": 2.5797,
+    "real_world_rate_sd": 2.248,
+    "false_positives_total": 48,
+    "reused_folds": [],
+    "cwe": "CWE-416",
+    "combo": "D",
+    "run": "20261008-212828",
+    "seed": 2,
+    "format": "template",
+    "negatives": "../git",
+    "docs": true,
+    "roles": {
+        "history": true,
+        "critic": false,
+        "merge": false,
+        "example_mode": "findings",
+        "diagnose": true
+    }
+}
