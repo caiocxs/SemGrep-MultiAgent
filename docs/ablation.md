@@ -228,7 +228,7 @@ Paired with B0 on the same folds (`python -m src.pipeline.compare`, bootstrap 95
 | G against B0, 10 folds | **+0.273** [+0.12, +0.41] | -0.053 [-0.21, +0.10] | +2.4 [-13.8, +18.6] | +0.06 [-2.15, +2.16] |
 | I against B0 seed 1, 5 folds | +0.213 [+0.03, +0.40] | -0.155 [-0.36, +0.05] | +12.0 [-12.0, +37.2] | +1.37 [-1.85, +4.62] |
 
-**Reading.** By the pre-registered criterion (interval excludes 0 and the difference reaches 0.10 in recall) the Groq model has a real
+**Reading** (an effect found on two seeds is exploratory until repeated on seeds 0, 3 and 4, see the quota note in 7b). By the pre-registered criterion (interval excludes 0 and the difference reaches 0.10 in recall) the Groq model has a real
 recall effect over the local 30B: it writes rules that detect almost every held-out Juliet variant. It does not pass the pipeline:
 0 of 10 folds accepted, and the real-world alert rate is the same as the local model's (2.59 against 2.53 per KLOC, limit 0.1). The
 larger model detects the Juliet cases more often, but its rules raise as many alerts on the Git sources as the local ones. The rules of G
@@ -243,10 +243,14 @@ The same holds for the only accepted folds of the whole study, which are from a 
 
 | Provider (free tier) | Limits seen | Calls | Seconds per call | 429 answers | Time waiting for limits |
 |---|---|---|---|---|---|
-| Groq, `openai/gpt-oss-120b` | 1000 requests/day, 8000 tokens/min (response headers `x-ratelimit-*`) | 74 | 2.2 (max 5.6) | 0 | 9 s of pacing (`min_interval` 2.5 s) |
+| Groq, `openai/gpt-oss-120b` | 1000 requests/day and 8000 tokens/min (response headers `x-ratelimit-*`); **200,000 tokens/day** (only in the text of the 429 that came at 20:03: "tokens per day (TPD): Limit 200000, Used 199928") | 74 until seed 2, then the 429s | 2.2 (max 5.6) | the daily one, after about 8 folds | 9 s of pacing (`min_interval` 2.5 s); then Retry-After of 18 min |
 | OpenRouter, Nemotron free | not exposed in headers | 54 so far | 17.9 | 5 | 2431 s |
 | Gemini, `gemini-flash-latest`, two keys | not exposed in headers | 20 so far | 130.6 | 7 | 3464 s |
 
+- **Groq's binding limit is the daily token quota, 200,000 tokens, about 8 folds a day** (a fold costs about 25 thousand tokens). The repeat of the
+  recall effect on seeds 0, 3 and 4 (15 folds, about 350 thousand tokens) did not fit: the three runs stopped on the quota (Retry-After
+  of 256 to 1092 s, longer than the 15 minutes the code waits) and were not completed. Per the plan the recall effect of G is therefore
+  **not yet a finding**: it holds on seeds 1 and 2 and is waiting for the repeat, which needs two more days at this tier or a paid one.
 - **Groq fits a full experiment inside the limits.** Ten folds (two seeds) took 74 calls (7% of the day's requests) and about 231 thousand
   tokens (181 thousand of prompt, 50 thousand of answer) in about two hours, and the time is dominated by the local Semgrep gate (the model call is
   2 s). A call is about 2.5 thousand prompt tokens, and about 700 of answer, so the 8000 tokens/min limit allows two to three calls per minute at full speed; the gate's
