@@ -113,8 +113,10 @@ class RemoteLLM:
                 waited += pause
         seconds = time.time() - start
         self._log(provider, role, body["model"], usage, seconds, waited, retries, status, detail)
-        if status.startswith("quota"):
-            raise QuotaExhausted(f"{provider}: {status}")
+        if status.startswith("quota") or status == "http 429":
+            # an answer that never came is not an empty answer of the model: stop instead of letting the loop count it as a failed
+            # attempt (a Gemini run recorded 35 of 35 attempts "empty" that way)
+            raise QuotaExhausted(f"{provider}: {status} {detail[:200]}")
         return text, seconds
 
     @staticmethod

@@ -186,11 +186,11 @@ On seed 2, the only seed with two 30B configurations on the same folds: v1 + war
 | `nodiag` | structural diagnoses of the gate off | done, 25 paired folds (5 seeds): recall +0.084 (interval +0.013 to +0.157), below the 0.10 of the criterion, so not an effect; precision -0.074 and alerts +0.86 with intervals that include 0; valid attempts 60% against 74% |
 | `critic` | a critic agent reviews each tested rule | done, 10 paired folds: no effect (recall -0.069, interval -0.27 to +0.11; alerts -0.40, interval -2.5 to +1.7) |
 | `criticnodiag` | the critic instead of the diagnoses | done, 10 paired folds: no effect (recall -0.069, interval -0.29 to +0.16; alerts +0.26); the critic does not replace the diagnoses, and adds nothing to them |
-| `merge` | a final attempt merges the best and a complementary rule | not run |
+| `merge` | a final attempt merges the best and a complementary rule | done, 10 paired folds: no effect (recall +0.035, interval -0.04 to +0.12; alerts -0.33, interval -2.3 to +1.5) |
 | `pairs` | vulnerable/safe pairs as examples instead of the detector's findings | done, 10 paired folds: no effect by the criterion (recall +0.158, interval -0.10 to +0.37; alerts +0.95), but **2 of 10 folds accepted**, the only accepted folds of all comparisons (seed 1, folds 0 and 3: test recall 57% and 31%, 0 Juliet false positives, 0.03 and 0.02 alerts/KLOC); upper bound on the example information, not the designed pipeline; the two rules were not read |
-| `none` | no examples | not run |
-| `qwen4b` | the 4B model with the final configuration | not run |
-| `phi4` | a second model family (Phi-4-mini) | not run |
+| `none` | no examples | done, 10 paired folds: recall -0.330 (interval -0.70 to +0.06, includes 0, so no effect by the criterion; 6 folds worse, 4 better); precision -0.39 on the 4 folds that have it (interval -0.59 to -0.12); alerts +0.57 (interval -1.8 to +3.0); the direction expected (the detector's findings help), not detected at 10 folds |
+| `qwen4b` | the 4B model with the final configuration | done, 10 folds: 0 accepted, recall 30.0% (against 71.6% of the 30B, interval of the difference -0.72 to -0.09), rules that match nothing in 7 folds, 0.009 alerts/KLOC; see section 7 |
+| `phi4` | a second model family (Phi-4-mini) | done, 10 folds: 0 accepted, recall 0.0%, no rule detected anything (most attempts are rejected by the spec check); against the 4B -0.30 (interval -0.60 to 0.00) |
 
 The results go into this table as they come, with the paired comparison against the baseline; null results are reported as such.
 
@@ -205,69 +205,85 @@ Exploratory options (see `docs/ablation_plan.md`, last section), seeds 1 and 2, 
 ## 7. Hosted models against the local ones: does a larger model pass the pipeline?
 
 Question: if the generator and the corrector are a 120B-class hosted model instead of a local one, do the rules pass the pipeline's
-gates (Juliet false positives and real-world alerts under 0.1 per KLOC on the train side)? Combos G, H and I use the same
-loop, template, prompts, folds and real-world files as combo D; only the generator and the corrector call an API (`src/pipeline/remote.py`,
-`configs/combos/combo_{g,h,i}.toml`; the models come from `.env`). Everything else, including the gate, is local and deterministic. These
-arms are reported apart from the local ones: a hosted 120B model is not a small local model (principle 1 of the project), and the
-prompts, with code from Juliet and Git, leave the machine.
+gates (Juliet false positives and real-world alerts under 0.1 per KLOC on the train side)? Combos G (Groq), H (Gemini) and I (OpenRouter)
+use the same loop, template, prompts, folds and real-world files as combo D; only the generator and the corrector call an API
+(`src/pipeline/remote.py`, `configs/combos/combo_{g,h,i}.toml`; the models come from `.env`). Everything else, including the gate, is local
+and deterministic. These arms are reported apart from the local ones: a hosted 120B model is not a small local model (principle 1 of the
+project), and the prompts, with code from Juliet and Git, leave the machine.
 
-### 7a. Result (CWE-416, template format, 5-fold cross-validation by variant, same seeds and folds as B0)
+### 7a. Result (CWE-416, template format, 5-fold cross-validation by variant, seeds 1 and 2, same folds and files as B0)
 
-| Generator and corrector | Seeds | Folds | Accepted | Recall | Precision | Juliet FP | Real-world alerts/KLOC |
+| Generator and corrector | Folds | Accepted | Recall | Precision | Juliet FP | Real-world alerts/KLOC | Valid? |
 |---|---|---|---|---|---|---|---|
-| Qwen3-4B, local (combo C, template v1) | 0 | 5 | 0 | 20.0% | 23.9% (1 fold) | - | 0.00 (rules empty or broad) |
-| Qwen3-Coder-30B, local (B0, final) | 1, 2 | 10 | **0** | 71.6% | 89.4% | 9.0 | 2.53 |
-| gpt-oss-120b, Groq (G) | 1, 2 | 10 | **0** | **98.9%** | 84.1% | 11.4 | 2.59 |
-| Nemotron-3-super-120b, OpenRouter free (I) | 1 | 5 | **0** | 92.7% | 75.5% | 20.4 | 3.77 |
-| Gemini flash (H) | 1 | partial | - | - | - | - | - (see 7b) |
+| Qwen3-4B, local (`qwen4b`, combo C) | 10 | **0** | 30.0% | 26.7% (3 folds) | 56.2 | 0.009 (rules that match nothing) | yes |
+| Phi-4-mini, local (`phi4`, combo F) | 10 | **0** | 0.0% | - (no rule detected anything) | - | - | yes |
+| Qwen3-Coder-30B, local (B0, final) | 10 | **0** | 71.6% | 89.4% | 9.0 | 2.53 | yes |
+| gpt-oss-120b, Groq (G) | 10 | **0** | **98.9%** | 84.1% | 11.4 | 2.59 | yes |
+| Nemotron-3-super-120b, OpenRouter free (I) | 10 | **0** | 76.4% | 73.4% (8 folds) | 24.8 | 4.04 | **partly**: see 7c |
+| Gemini flash (H) | 10 | **0** | 18.6% | - | - | - | **no**: see 7c |
 
 Paired with B0 on the same folds (`python -m src.pipeline.compare`, bootstrap 95% interval over folds):
 
 | Comparison | Recall | Precision | Juliet FP | Real-world alerts/KLOC |
 |---|---|---|---|---|
 | G against B0, 10 folds | **+0.273** [+0.12, +0.41] | -0.053 [-0.21, +0.10] | +2.4 [-13.8, +18.6] | +0.06 [-2.15, +2.16] |
-| I against B0 seed 1, 5 folds | +0.213 [+0.03, +0.40] | -0.155 [-0.36, +0.05] | +12.0 [-12.0, +37.2] | +1.37 [-1.85, +4.62] |
+| I against B0, 10 folds | +0.048 [-0.17, +0.24] | -0.134 [-0.33, +0.08] | +13.5 [-10.5, +35.3] | +1.38 [-1.90, +4.29] |
+| qwen4b against B0, 10 folds | -0.416 [-0.72, -0.09] | -0.584 [-0.81, -0.21] (3 folds) | +47.2 [-4.8, +111.2] | -2.52 [-4.06, -1.28] (rules that match nothing) |
+| phi4 against qwen4b, 10 folds | -0.300 [-0.60, 0.00] | no fold has it on both sides | - | - |
 
-**Reading** (an effect found on two seeds is exploratory until repeated on seeds 0, 3 and 4, see the quota note in 7b). By the pre-registered criterion (interval excludes 0 and the difference reaches 0.10 in recall) the Groq model has a real
-recall effect over the local 30B: it writes rules that detect almost every held-out Juliet variant. It does not pass the pipeline:
-0 of 10 folds accepted, and the real-world alert rate is the same as the local model's (2.59 against 2.53 per KLOC, limit 0.1). The
-larger model detects the Juliet cases more often, but its rules raise as many alerts on the Git sources as the local ones. The rules of G
-and I were not read, so the reason is not known; the earlier reading of local rules (`findings.md`, items 3 and 9) found loops that move to
-another element and reassignment through macros, and the equal alert rate suggests the same obstacle, which a larger generator does not remove. OpenRouter shows the same direction with less recall and more
-false positives, on one seed only (5 folds, the interval of the recall barely excludes 0): exploratory.
+**Reading.** Nothing passes the pipeline: **0 accepted folds in all 60 folds of this section**, local and hosted. The Groq model has a recall
+effect over the local 30B by the pre-registered criterion (interval excludes 0 and the difference is above 0.10): it writes rules that detect
+almost every held-out Juliet variant. But the real-world alert rate is the same as the local model's (2.59 against 2.53 per KLOC, limit 0.1),
+so the larger model detects the Juliet cases more often and raises as many alerts on the Git sources. The rules of G were not read, so the
+reason is not known; the earlier reading of local rules (`findings.md`, items 3 and 9) found loops that move to another element and reassignment
+through macros, and the equal alert rate suggests the same obstacle, which a larger generator does not remove. An effect found on two seeds is
+exploratory until repeated on seeds 0, 3 and 4 (plan), and that repeat did not fit in Groq's daily quota (7b): **the recall effect of G is not yet a
+finding.** The OpenRouter model shows no effect over the local 30B (+0.048), and what looked like +0.21 on its first seed alone did not hold with the
+second.
 
-The same holds for the only accepted folds of the whole study, which are from a **local** model with a different example source
-(`pairs`, section 6b): they have low recall (57% and 31%), which suggests narrow rules, and were not read.
+The small local models fail in a different way: the 4B writes rules that match nothing (real-world alerts 0.009 per KLOC, recall 30%, 7 of 10
+folds with recall 0), and Phi-4-mini, a second model family at the same size, writes template specs the checker rejects in most attempts (23 of its
+attempts in seed 1 use a key, `variable`, that does not exist) and no rule of it detected anything. Phi-4-mini does no better than the 4B (it
+does worse), as the plan expected; it does not say whether the family or the answer format is the cause. In this pipeline the small models do not get
+to a rule that detects, the 30B and the 120B do, and none of them passes the real-world gate.
+
+The only accepted folds of the whole study are from a **local** 30B with a different example source (`pairs`, section 6b): 2 of 10, with low recall
+(57% and 31%), which suggests narrow rules; they were not read.
 
 ### 7b. Rate limits (from `logs/remote_usage.jsonl`, one line per call, keys never logged)
 
-| Provider (free tier) | Limits seen | Calls | Seconds per call | 429 answers | Time waiting for limits |
+| Provider (free tier) | Limits seen | Calls | Answered | Seconds per call | Waiting for limits |
 |---|---|---|---|---|---|
-| Groq, `openai/gpt-oss-120b` | 1000 requests/day and 8000 tokens/min (response headers `x-ratelimit-*`); **200,000 tokens/day** (only in the text of the 429 that came at 20:03: "tokens per day (TPD): Limit 200000, Used 199928") | 74 until seed 2, then the 429s | 2.2 (max 5.6) | the daily one, after about 8 folds | 9 s of pacing (`min_interval` 2.5 s); then Retry-After of 18 min |
-| OpenRouter, Nemotron free | not exposed in headers | 54 so far | 17.9 | 5 | 2431 s |
-| Gemini, `gemini-flash-latest`, two keys | not exposed in headers | 20 so far | 130.6 | 7 | 3464 s |
+| Groq, `openai/gpt-oss-120b` | 1000 requests/day and 8000 tokens/min (response headers `x-ratelimit-*`); **200,000 tokens/day** (only in the text of the 429: "tokens per day (TPD): Limit 200000, Used 199928") | 103 | 96 (the other 7: a 403 from the user agent, 6 stops on the daily quota) | 2.2 while within the limits | 419 s, then Retry-After of 4 to 22 min |
+| OpenRouter, Nemotron free | not exposed in headers | 71 | 56 | 25.4 | 7676 s (2.1 h) |
+| Gemini, `gemini-flash-latest`, two keys | not exposed in headers | 71 | **13** | 130.6 | **28615 s (7.9 h)** |
 
-- **Groq's binding limit is the daily token quota, 200,000 tokens, about 8 folds a day** (a fold costs about 25 thousand tokens). The repeat of the
-  recall effect on seeds 0, 3 and 4 (15 folds, about 350 thousand tokens) did not fit: the three runs stopped on the quota (Retry-After
-  of 256 to 1092 s, longer than the 15 minutes the code waits) and were not completed. Per the plan the recall effect of G is therefore
-  **not yet a finding**: it holds on seeds 1 and 2 and is waiting for the repeat, which needs two more days at this tier or a paid one.
-- **Groq fits a full experiment inside the limits.** Ten folds (two seeds) took 74 calls (7% of the day's requests) and about 231 thousand
-  tokens (181 thousand of prompt, 50 thousand of answer) in about two hours, and the time is dominated by the local Semgrep gate (the model call is
-  2 s). A call is about 2.5 thousand prompt tokens, and about 700 of answer, so the 8000 tokens/min limit allows two to three calls per minute at full speed; the gate's
-  time between calls kept the run far from it. A longer run (more seeds or CWEs) would hit the per-minute token limit first, then the
-  daily one (not exposed by the headers).
-- **OpenRouter's free model works, slowly:** 18 s per answer (about 2000 tokens each, longer than the other models, which write 500 to 700)
-  and a 429 every ten calls, handled by waiting. One seed (5 folds) took about half an hour.
-- **Gemini's free tier is the limit of this study:** 20 calls in an hour and a half, 7 of the 20 answered 429 even with two keys, 130 s per
-  call on average. A 5-fold seed needs about 35 calls, so each seed takes many hours; only part of seed 1 exists and the arm is not compared.
-  The quota, not the model, decides what can be measured with it.
-- The pacing and retry code (`min_interval`, Retry-After, key rotation, stop when the wait suggests the daily quota is gone) is tested
-  in `tests/test_remote.py`.
+- **Groq's binding limit is the daily token quota, 200,000 tokens, about 8 folds a day** (a fold costs about 25 thousand tokens: 238 thousand prompt
+  and 65 thousand answer tokens over the 103 calls). Ten folds (two seeds) fit in the day; the repeat of the recall effect on seeds 0, 3 and 4
+  (15 folds, about 350 thousand tokens) did not: the three runs stopped on the quota (Retry-After of 256 to 1302 s, longer than the 15 minutes the code
+  waits) and were not completed. Needs two more days at this tier or a paid one. The time of a Groq run is dominated by the local Semgrep gate (the
+  call is 2 s); a call is about 2.5 thousand prompt tokens and 700 of answer, so the 8000 tokens/min limit allows two to three calls per minute at full speed.
+- **OpenRouter's free model answered 79% of the calls**, slowly (25 s per answer; about 2000 tokens each, longer than the other models, which write
+  500 to 700) and with 429 answers that were retried; 15 calls never got through.
+- **Gemini's free tier allowed 13 answers in 8.5 hours** (58 calls gave up after 8 retries each, 469 retries in all): it cannot carry an experiment of
+  this size, and the arm's numbers say nothing about the model.
+- The pacing and retry code (`min_interval`, Retry-After, key rotation, stop when the wait suggests the daily quota is gone) is tested in
+  `tests/test_remote.py`.
 
-### 7c. Limits of this comparison
+### 7c. What invalidates part of the table
 
-- Two hosted models on one or two seeds each; the 10-fold interval of G is the only one that supports a claim, the rest is exploratory.
-- A hosted model is not deterministic across days (versions change) even at temperature 0; the run was made once.
+When a call exhausted its retries on a 429, the first version of `remote.py` returned an empty answer, and the loop counted it as a failed attempt of
+the model ("No JSON spec found in the response"). That happened in **all 35 attempts of the Gemini run of seed 2** (it never got an answer, so no rule at all), in up to 15 attempts of the
+OpenRouter runs (the 15 calls that never got through; some of the 20 "No JSON spec" attempts of its seed 2 may be real answers of the model) and in
+an unknown number in the first Gemini run. So the rows of H (recall 18.6%) and, in part, I measure the quota,
+not the model: **H is not a comparison, and I is exploratory.** The code now stops with an error in that case (`QuotaExhausted`, tested), so a later run
+cannot be contaminated this way; the Groq runs of seeds 1 and 2 had no such case (no 429 on those folds, `remote_usage.jsonl`). The two failed Groq
+seeds (0, 3, 4) stopped on the error of the quota and left no partial result in the table.
+
+### 7d. Limits of this comparison
+
+- Two hosted models on two seeds each (and one of them barely usable); the 10-fold interval of G is the only one that supports a claim.
+- A hosted model is not deterministic across days (versions change) even at temperature 0; the runs were made once.
 - Prompts include code of the Juliet and Git sources; the free tiers may keep them.
-- Not measured here: the 4B local model and Phi-4-mini with the final configuration (`qwen4b`, `phi4`, queued), which are the reference
-  for the small-model end of the comparison.
+- Phi-4-mini and the 4B model differ in family and in size class, but the template was written for the strategy; the failure of Phi-4-mini
+  is in the format of its answers, so a different prompt could change it.

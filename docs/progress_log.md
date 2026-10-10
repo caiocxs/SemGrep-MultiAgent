@@ -62,16 +62,25 @@ no false positives) and real-world C code (at most 0.1 alerts per KLOC), for CWE
 | 20:35 | Graph analyzer: loops that run once, and `&p` passed to functions that free or use what they load from `*param` (with a reset rule for list pops) | Use after free: Juliet **134/138** (was 126), 0 false positives, Git 0.014 / 0.063 alerts/KLOC (unchanged); double free: Juliet **162/272** with 0 false positives (was 6), Git 0.059 train, **0.295 test** (above the limit). The 33 test alerts (and 17 train ones) were read as a list: none looked like a double free, 41 of 50 are `ref_transaction_commit` then `ref_transaction_free`, a summary that says "frees on some path". The code was not changed after reading them, so 0.295 is the clean held-out number | **Advance** on Juliet for both CWEs; **No advance** on the real-world gate for CWE-415 (open) |
 | 20:40 | Decision on the LLM judge for the graph | **Not implemented**: it can only drop candidates, the false positives are already under the limit (4 train, 7 test alerts for CWE-416) and the misses come from derived pointers and data-structure lifetimes, which a filter cannot add | Decision recorded with its numbers in `graph_analyzer.md`; revisit if the query grows to hundreds of alerts per KLOC |
 
-## Scorecard (as of 2026-10-09, about 20:15)
+## 2026-10-10 (overnight results and the correction of one of them)
+
+| Time | What | Result | Progress |
+|---|---|---|---|
+| 21:53 to 00:23 | Local queue finished: `merge`, `none`, `qwen4b`, `phi4` (10 folds each) | `merge`: no effect (recall +0.035). `none`: recall -0.33, interval includes 0 (not detected at 10 folds, direction as expected). `qwen4b`: recall 30%, rules that match nothing, 0 accepted. `phi4`: recall 0%, no rule detected anything | No advance for the rules (each planned comparison is now answered; the pipeline's gate is still never passed); the planned comparisons are complete |
+| 02:38 | Gemini (H) and OpenRouter (I) finished their two seeds | I over 10 folds: recall +0.048 over the 30B (the +0.21 of its first seed did not hold), 0 accepted. Gemini: 13 answers in 8.5 hours | No advance; the "+0.21" would have been a false claim from one seed |
+| 02:40 | **Error found in my own measurement**: a call that gave up on a 429 was returned as an empty answer and counted as a failed attempt of the model (all 35 attempts of one Gemini run, up to 15 of the OpenRouter ones) | The H and part of the I numbers measure the quota, not the model: H is declared not a comparison, I exploratory; `remote.py` now stops with an error in that case (tested). The Groq runs used for the claim had no such case | Correction of a result; section 7c of `ablation.md` |
+| 02:50 | Documents updated: section 7 of `ablation.md` rewritten with the final numbers, items 14 to 18 of `findings.md`, summaries exported to `results/crossval/` | - | - |
+
+## Scorecard (as of 2026-10-10)
 
 | Question | Status |
 |---|---|
 | Can a local model write rules that generalize across Juliet variants? | Yes for the 30B (recall 76% over 25 folds), no for the 4B (20%) |
 | Does any rule pass both gates? | **No** in 40+ folds of the designed pipeline; only 2 folds with `pairs` (narrow rules) |
 | Is more help to the generator an answer? (docs, history, guard, apis, critic, pairs) | No: each tried, none moves alerts/KLOC |
-| Does a larger hosted model pass? | No: better recall, same alerts (0/10 and 0/5 accepted) |
+| Does a larger hosted model pass? | No: Groq 120B has better recall (+0.27, not yet repeated), the same alerts (0/10 accepted); OpenRouter no effect; Gemini not measurable |
 | Is there any approach under the real-world limit with Juliet recall at the reference level? | **Yes, the event-graph query without any model** for CWE-416 (Juliet 134/138, Git 0.014 / 0.063 against 0.1); it finds 2 of the 16 real fix commits, both exactly the bug. For CWE-415: Juliet 162/272, Git 0.059 train but **0.295 test** (open) |
-| What is left of the planned comparisons? | `merge`, `none`, `qwen4b`, `phi4` (queue running); G repeated on seeds 0, 3, 4 (needs two more days of Groq quota or a paid tier); the graph: a summary that requires the free on every path (CWE-415 on Git), pointers derived from freed objects; the LLM judge was decided against |
+| What is left of the planned comparisons? | **All the planned ones are done** (`nodocs`, `history`, `nodiag`, `critic`, `criticnodiag`, `merge`, `pairs`, `none`, `qwen4b`, `phi4`, and the exploratory `guard`, `apis`, `guardapis`); not done: G repeated on seeds 0, 3, 4 (two more days of Groq quota or a paid tier); the graph: a summary that requires the free on every path (CWE-415 on Git), pointers derived from freed objects; the LLM judge was decided against |
 
 ## Log of next entries
 

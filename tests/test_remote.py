@@ -56,3 +56,12 @@ def test_long_retry_after_means_quota(monkeypatch):
     monkeypatch.setattr(remote.urllib.request, "urlopen", fake)
     with pytest.raises(remote.QuotaExhausted):
         remote.RemoteLLM().complete("generator", _settings(), "p")
+
+
+def test_retries_exhausted_on_429_is_not_an_empty_answer(monkeypatch):
+    def fake(request, timeout=None):
+        raise urllib.error.HTTPError("u", 429, "rate", {"Retry-After": "1"}, io.BytesIO(b"{}"))
+
+    monkeypatch.setattr(remote.urllib.request, "urlopen", fake)
+    with pytest.raises(remote.QuotaExhausted):
+        remote.RemoteLLM().complete("generator", _settings(), "p")

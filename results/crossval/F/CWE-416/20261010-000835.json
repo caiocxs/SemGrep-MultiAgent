@@ -1,0 +1,115 @@
+{
+    "folds": [
+        {
+            "fold": 0,
+            "test_variants": [
+                "01",
+                "04",
+                "11",
+                "12"
+            ],
+            "accepted": false,
+            "best_attempt": 1,
+            "has_rule": true,
+            "recall": 0.0,
+            "precision": null,
+            "false_positives": 0,
+            "real_world_rate": 0.0,
+            "run_id": "20261010-000835"
+        },
+        {
+            "fold": 1,
+            "test_variants": [
+                "06",
+                "09",
+                "14",
+                "17"
+            ],
+            "accepted": false,
+            "best_attempt": 0,
+            "has_rule": false,
+            "recall": 0.0,
+            "precision": null,
+            "false_positives": null,
+            "real_world_rate": null,
+            "run_id": "20261010-001147"
+        },
+        {
+            "fold": 2,
+            "test_variants": [
+                "02",
+                "03",
+                "15",
+                "18"
+            ],
+            "accepted": false,
+            "best_attempt": 0,
+            "has_rule": false,
+            "recall": 0.0,
+            "precision": null,
+            "false_positives": null,
+            "real_world_rate": null,
+            "run_id": "20261010-001304"
+        },
+        {
+            "fold": 3,
+            "test_variants": [
+                "13",
+                "16",
+                "63",
+                "64"
+            ],
+            "accepted": false,
+            "best_attempt": 0,
+            "has_rule": false,
+            "recall": 0.0,
+            "precision": null,
+            "false_positives": null,
+            "real_world_rate": null,
+            "run_id": "20261010-001409"
+        },
+        {
+            "fold": 4,
+            "test_variants": [
+                "05",
+                "07",
+                "08",
+                "10"
+            ],
+            "accepted": false,
+            "best_attempt": 0,
+            "has_rule": false,
+            "recall": 0.0,
+            "precision": null,
+            "false_positives": null,
+            "real_world_rate": null,
+            "run_id": "20261010-001559"
+        }
+    ],
+    "accepted_folds": 0,
+    "folds_with_rule": 1,
+    "recall_mean": 0.0,
+    "recall_sd": 0.0,
+    "precision_mean": null,
+    "precision_sd": null,
+    "real_world_rate_mean": 0.0,
+    "real_world_rate_sd": 0.0,
+    "false_positives_total": 0,
+    "reused_folds": [],
+    "cwe": "CWE-416",
+    "combo": "F",
+    "run": "20261010-000835",
+    "seed": 1,
+    "format": "template",
+    "negatives": "../git",
+    "docs": true,
+    "roles": {
+        "history": false,
+        "critic": false,
+        "merge": false,
+        "example_mode": "findings",
+        "diagnose": true,
+        "guard": false,
+        "project_apis": false
+    }
+}

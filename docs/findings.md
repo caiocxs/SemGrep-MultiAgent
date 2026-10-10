@@ -1,4 +1,4 @@
-# Findings so far (2026-10-07)
+# Findings so far (updated 2026-10-10)
 
 Status of the evidence after the runs described in [experiments.md](experiments.md) and the changes in
 [changes.md](changes.md). Everything below is from one machine, local models, Semgrep OSS 1.178, Juliet CWE-416
@@ -96,6 +96,30 @@ real-world files: they are not paired.
    2.53, not significant); together they produce wide rules (recall 97.5%, 101 false positives, 17 alerts/KLOC). The model copies the list into the
    rule's event, and only 4 of the 51 alerts reviewed by hand involved the wrapper the list was meant to help with. Exploratory, 10 folds each.
 
+14. **A hosted 120B model writes rules that detect more, and raises the same alerts.** With Groq `gpt-oss-120b` as generator and corrector (10 paired
+   folds), recall is +0.273 over the local 30B (interval +0.12 to +0.41, an effect by the criterion), precision -0.05 and real-world alerts the same
+   (2.59 against 2.53 per KLOC, limit 0.1); 0 of 10 folds accepted. A second hosted model (Nemotron, OpenRouter free) gives no effect over the 30B
+   (+0.048) and Gemini could not be measured (its free tier answered 13 calls in 8.5 hours). The recall effect of the Groq model is **not yet a finding**: the
+   repeat on seeds 0, 3 and 4 did not fit in the provider's daily quota of 200,000 tokens. Size of the generator does not move the real-world gate.
+15. **The small local models do not reach a rule that detects.** The 4B model with the final configuration: recall 30% (7 of 10 folds with recall 0), rules
+   that match nothing (0.009 alerts/KLOC), 0 accepted. Phi-4-mini, a second family: recall 0%, most attempts rejected by the spec check; no rule detected
+   anything. Against the 30B, -0.42 recall for the 4B (interval -0.72 to -0.09).
+16. **More agents and more help did not help: critic, merge, history, documentation, guard, apis.** Added to the null results of items 10 to 13:
+   `critic` (recall -0.07), `criticnodiag` (-0.07), `merge` (+0.035), none of them with an interval that excludes 0, and none lowers the alerts. Removing the examples
+   (`none`) lowers recall by 0.33 (interval -0.70 to +0.06): the direction expected, not detected with 10 folds. Vulnerable/safe pairs from the dataset labels
+   (`pairs`) give the only accepted folds of the study, 2 of 10, with recall 57% and 31%; that is an upper bound on the example information, not the
+   designed pipeline, and the two rules were not read.
+17. **An analyzer that is not a rule passes the real-world gate on CWE-416** (arm apart, `graph_analyzer.md`): a tree-sitter extractor of pointer events with
+   control-flow edges and call summaries, queried by path (a use reachable from a `free` of the same variable with no new value in between). Juliet CWE-416: 134/138
+   cases, 0 false positives; Git: 0.014 (train) and 0.063 (test) alerts per KLOC against the limit of 0.1, where the rules reach about 2.9. It was tuned by reading train
+   alerts only, and the 11 alerts left were read: none is a bug. On the 16 fix commits of Git it has an alert near the fix in 2, and both are exactly the fixed
+   bug (2 of 2 alerts against 9% for a `free()` line; the rules were at chance); the other 14 are out of reach of following one variable (pointers derived from the
+   freed object, structure lifetimes). CWE-415 on the same extractor, without tuning: Juliet 162/272 with 0 false positives, but 0.295 alerts/KLOC on the held-out
+   Git files (limit 0.1): the call summaries say "frees on some path". An LLM judge over its candidates was decided against, with the numbers above.
+18. **Free API tiers cap what can be measured, and a retry that gives up is not an empty answer.** Groq: 200,000 tokens a day (about 8 folds), found only in the
+   text of the 429; OpenRouter free: 79% of the calls answered; Gemini free: 13 answers in 8.5 hours. The first `remote.py` turned a call that never got an answer
+   into an empty answer, which the loop counted as a failed attempt of the model (all 35 attempts of one Gemini run); it now stops with an error.
+
 ## Threats to validity and limits
 
 - **One CWE with enough data (416), 20 variants, 4-6 per test group;** CWE-415 is a negative result with a template made for 416.
@@ -117,6 +141,5 @@ real-world files: they are not paired.
 
 ## Not done
 
-Evaluation of the critic, merger, history and example-mode options (implemented, with a plan in `docs/ablation_plan.md`;
-the documentation and history comparisons are done, the rest is pending); the other CWEs (401, 457, 476); a second model family; CVE-fix evaluation beyond the 16 Git commits;
-interprocedural flows (Semgrep OSS); the 4B model (combo C) with the final configuration.
+The repeat of the Groq recall effect on seeds 0, 3 and 4 (quota); the other CWEs (401, 457, 476) for the rule synthesis (the graph query has a CWE-415 result, open on Git); CVE-fix evaluation beyond the 16 Git commits;
+interprocedural flows in Semgrep OSS; reading the two accepted `pairs` rules and the rules of the hosted models; for the graph: a summary that requires the free on every path, pointers derived from freed objects.
