@@ -109,14 +109,7 @@ real-world files: they are not paired.
    (`none`) lowers recall by 0.33 (interval -0.70 to +0.06): the direction expected, not detected with 10 folds. Vulnerable/safe pairs from the dataset labels
    (`pairs`) give the only accepted folds of the study, 2 of 10, with recall 57% and 31%; that is an upper bound on the example information, not the
    designed pipeline, and the two rules were not read.
-17. **An analyzer that is not a rule passes the real-world gate on CWE-416** (arm apart, `graph_analyzer.md`): a tree-sitter extractor of pointer events with
-   control-flow edges and call summaries, queried by path (a use reachable from a `free` of the same variable with no new value in between). Juliet CWE-416: 134/138
-   cases, 0 false positives; Git: 0.014 (train) and 0.063 (test) alerts per KLOC against the limit of 0.1, where the rules reach about 2.9. It was tuned by reading train
-   alerts only, and the 11 alerts left were read: none is a bug. On the 16 fix commits of Git it has an alert near the fix in 2, and both are exactly the fixed
-   bug (2 of 2 alerts against 9% for a `free()` line; the rules were at chance); the other 14 are out of reach of following one variable (pointers derived from the
-   freed object, structure lifetimes). CWE-415 on the same extractor, without tuning: Juliet 162/272 with 0 false positives, but 0.295 alerts/KLOC on the held-out
-   Git files (limit 0.1): the call summaries say "frees on some path". An LLM judge over its candidates was decided against, with the numbers above.
-18. **Free API tiers cap what can be measured, and a retry that gives up is not an empty answer.** Groq: 200,000 tokens a day (about 8 folds), found only in the
+17. **Free API tiers cap what can be measured, and a retry that gives up is not an empty answer.** Groq: 200,000 tokens a day (about 8 folds), found only in the
    text of the 429; OpenRouter free: 79% of the calls answered; Gemini free: 13 answers in 8.5 hours. The first `remote.py` turned a call that never got an answer
    into an empty answer, which the loop counted as a failed attempt of the model (all 35 attempts of one Gemini run); it now stops with an error.
 
@@ -141,5 +134,5 @@ real-world files: they are not paired.
 
 ## Not done
 
-The repeat of the Groq recall effect on seeds 0, 3 and 4 (quota); the other CWEs (401, 457, 476) for the rule synthesis (the graph query has a CWE-415 result, open on Git); CVE-fix evaluation beyond the 16 Git commits;
-interprocedural flows in Semgrep OSS; reading the two accepted `pairs` rules and the rules of the hosted models; for the graph: a summary that requires the free on every path, pointers derived from freed objects.
+The repeat of the Groq recall effect on seeds 0, 3 and 4 (quota); the other CWEs (401, 457, 476) for the rule synthesis; CVE-fix evaluation beyond the 16 Git commits;
+interprocedural flows in Semgrep OSS; reading the two accepted `pairs` rules and the rules of the hosted models.
