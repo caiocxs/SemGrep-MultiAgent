@@ -23,6 +23,7 @@ quiet on real C code (at most 0.1 alerts per KLOC on the Git sources, assumed co
 | 2026-10-12 | **Held-out test on two untouched projects, as pre-registered** (Redis `38087a9f7`, 479 files, 320 KLOC; OpenSSL `122db7eb07`, 1695 files, 862 KLOC; no change to the extractor) | Coverage is fine (Redis 8.5 and OpenSSL 13.2 `free` events per KLOC, so not blind). **Use after free: Redis 4.131 alerts/KLOC on train and 2.561 on test; OpenSSL 0.290 and 0.628. Double free: Redis 0.866 and 1.039; OpenSSL 0.133 and 0.223.** All above the limit of 0.1 | **No advance, and the important negative result**: the 0.014 / 0.063 on Git did **not** carry over to two other projects; by the criterion written beforehand the method fails on both |
 | 2026-10-12 | Diagnosis of the Redis and OpenSSL alerts (a systematic sample of 40 per project, every k-th in file and line order, then a count over all alerts) | **98-99% of the alerts of Redis and OpenSSL have a "free" that is a call classified by the callee's summary, not a direct `free`** (Redis: 1162 of 1174 use-after-free alerts, e.g. `addReplyArrayLen(c, 2)` seen as freeing the client `c`; OpenSSL: 327 of 330, e.g. `ossl_ssl_init(ssl, ctx, ..)` as freeing `ctx`); in Git it was 100% and 92% (use after free, double free), in curl 89% and 75%. One wrong summary yields dozens of alerts in one function (222 in `xinfoReplyWithStreamInfo`). The Git 0.014 was low because Git has few badly summarized calls, not because the method was precise | Diagnosis: the cause is the summary "frees its parameter on some path", known since the first measurements; the held-out projects show how much it weighs. Next: a summary that requires the free on every path to the exit, and `#if/#else` as alternatives (they were walked in sequence) |
 | 2026-10-12 | **Second iteration** from the diagnosis: a call summary says "frees" only if the free lies on **every** path from the entry to a return (explicit entry and return/end marker events; a path ending in `exit`/`die` is not a return); `#if`/`#else` are alternatives. 3 new tests (49 in all). A first version without explicit return markers still failed its own test (a path that returns with no event before it left no trace in the graph), which is why the markers exist | Juliet CWE-416 unchanged (134/138, 0 false positives); Juliet CWE-415 **162 -> 150/272** (variants 21 and 22 are lost: the callee frees only if a global flag is set, a true double free that a free on every path cannot see), 0 false positives. **Alerts per KLOC on the four development projects (train / test):** Git use after free 0.000 / 0.000, double free 0.010 / 0.009; curl 0.005 / 0.000 and 0.010 / 0.000; Redis 0.040 / 0.031 and 0.009 / 0.031; OpenSSL 0.024 / 0.000 and 0.026 / 0.004 (before: Redis 4.131 / 2.561, OpenSSL 0.290 / 0.628 for use after free) | **Advance on the real-world side, with a recall cost**: all four projects under 0.1 on both sides and both queries, but all four are development sets now (the extractor changed after seeing each), so this is not yet a held-out result |
+| 2026-10-12 | **Fresh projects, measured once, as pre-registered** (nginx `2b5c2b60`, 271 files, 242 KLOC; libxml2 `c43dc98d`, 88 files, 190 KLOC; extractor as at `8e81dfb`) | **Both are blind, not passed**: 130 and 88 `free` events, **0.5 per KLOC** (the minimum was 3). 0 alerts of either query on either side means nothing. nginx releases through pools and its own functions (`ngx_pfree` 21, `ngx_slab_free_locked` 32, `ngx_free_chain` 30; only `ngx_free` is an alias of `free`, 134 uses), libxml2 through `xmlFree`, a function-pointer variable the extractor cannot see through, and its own macros (`FREE_AND_NULL` 140, `DICT_FREE` 17) | **No advance, informative**: the claim "under 0.1 alerts per KLOC on real code" is **not extended** beyond the four projects it was developed on; the coverage rule of the protocol did its job (it kept two empty results from being read as two passes) |
 | 2026-10-11 | The graph arm was separated from the rule-synthesis branch (it had been merged into it only to let a running experiment queue keep a script fix) | `feat/graph-analyzer` is `main` plus the graph work only; this file is its own log | Housekeeping |
 
 ## Protocol for a second code base (written on 2026-10-11 **before** the run)
@@ -83,20 +84,22 @@ that matters is the one measured **once** on projects not yet seen.
   either, the claim is restricted to the projects it was tuned on. All use-after-free alerts are read afterwards, up to 40 per project in
   sorted order of file and line.
 
-## Where the arm stands (2026-10-11)
+## Where the arm stands (2026-10-12)
 
 | Question | Status |
 |---|---|
 | Juliet, CWE-416 | 134/138 cases, 0 false positives |
-| Real-world gate, CWE-416 | 0.014 train, 0.063 test, limit 0.1 (met on both sides) |
-| Real bugs | 2 of 16 fix commits, both exactly the fixed bug, no other alert in those files |
-| CWE-415 | Juliet 162/272, 0 false positives; Git 0.059 train, **0.295 test** (open) |
+| Juliet, CWE-415 | 150/272 cases, 0 false positives (162 with the "frees on some path" summaries, which flood the real code with false alerts) |
+| Real code, **development sets** (the extractor was changed after seeing each) | Git, curl, Redis, OpenSSL: use after free and double free under 0.1 alerts/KLOC on both sides of the split, 0.000 to 0.040 |
+| Real code, **held-out** | **First attempt (Redis, OpenSSL, 2026-10-12): failed**, 0.29 to 4.1 alerts/KLOC for use after free, because of the "frees on some path" summaries (98-99% of the alerts); the fix was made on those two, which makes them development sets. **Second attempt (nginx, libxml2): blind**, 0.5 `free` events per KLOC, nothing to conclude |
+| Real bugs | 2 of 16 fix commits of Git, both exactly the fixed bug; not repeated for the other projects (no fix-commit run with the macros) |
+| What is not shown | that the result holds on a project the extractor has not been adapted to: it recognizes releases by name (`free` and its aliases, wrappers found in the sources, functions that free their parameter on every path), and a project with its own allocator abstraction (pools, function-pointer `xmlFree`) is outside it |
 | LLM judge | decided against |
-| Tuned on | train alerts of Git only; CWE-415 not tuned; the same Git sources used for the train and the test side (split by file hash), so there is **no second code base yet** |
 
 ## Next steps (not done)
 
-Written down so that the arm's claims stay honest: a code base other than Git as a clean held-out (the conventions were found on Git); an
-ablation of the conventions (what each one removes on train and on test); a summary that requires the free on every path (CWE-415 on
-Git, no longer a clean test for the seed-0 split); the other CWEs with the same events (leak, null dereference, uninitialized use); pointers
-derived from freed objects.
+Written down so that the arm's claims stay honest: discovering a project's deallocators instead of listing names (functions that free a
+pool object, function-pointer variables such as `xmlFree`), then one more pair of untouched projects with the coverage rule; an ablation
+of the conventions (what each one removes on the development projects); the fix commits of curl, Redis and OpenSSL with the macros and
+the new summaries; the other CWEs with the same events (leak, null dereference, uninitialized use); pointers derived from freed objects;
+a way to tell a conditional free that depends on a flag (variants 21 and 22 of CWE-415) from one that depends on an error.

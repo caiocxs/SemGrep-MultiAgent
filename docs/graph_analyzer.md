@@ -1,7 +1,9 @@
 # Event-graph analyzer (design sketch)
 
-Status: on branch `feat/graph-analyzer`. The schema, the path queries, the tree-sitter extractor and the scoring against Juliet
-and the Git sources exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`); the LLM judge is not written.
+Status: on branch `feat/graph-analyzer`. The schema, the path queries, the tree-sitter extractor, the scoring against Juliet and real
+projects, and the fix-commit evaluation exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`, 49 tests); the LLM
+judge was decided against. The tables below were measured at different versions of the extractor: the section "Other projects" (2026-10-12) says
+which numbers are current and which are development or held-out.
 
 ## Why a second arm
 
@@ -92,6 +94,34 @@ test together) are a `ref_transaction_*` call followed by `ref_transaction_free(
 parameter on some path". I did not change the code afterwards.** The fix that this
 points to (a summary that requires the free on every path to the exit) is the next step, and its result will not be a clean test
 for the seed-0 split.
+
+## Other projects, and what the Git numbers did not show (2026-10-12)
+
+The first table above is Git only, and Git is where the conventions were found. The check on other C projects (protocols and dates in
+[graph_progress.md](graph_progress.md)) gave:
+
+| Project (KLOC) | Extractor version | Free events per KLOC | Use after free, train / test | Double free, train / test | Role |
+|---|---|---|---|---|---|
+| curl (267) | before release macros | 0.5 | 0.005 / 0.000 | 0.005 / 0.000 | held-out, **blind** (curl frees through `curlx_free`) |
+| Redis (320) | before the "every path" summaries | 8.5 | **4.131 / 2.561** | 0.866 / 1.039 | held-out, **failed** |
+| OpenSSL (862) | before the "every path" summaries | 13.2 | **0.290 / 0.628** | 0.133 / 0.223 | held-out, **failed** |
+| Git (400), curl, Redis, OpenSSL | after release macros and "every path" summaries | 6.7 to 13.2 | 0.000 to 0.040 / 0.000 to 0.031 | 0.009 to 0.026 / 0.000 to 0.031 | **development sets** (changed after seeing each) |
+| nginx (242), libxml2 (190) | final | **0.5** | 0 / 0 | 0 / 0 | held-out, **blind**: the empty result means nothing |
+
+- **What failed and why.** On Redis and OpenSSL, 98-99% of the alerts had as their "free" a *call* classified by the callee's summary
+  ("frees its parameter on some path"): `addReplyArrayLen(c, 2)` seen as freeing the Redis client `c`, `ossl_ssl_init(ssl, ctx, ..)` as freeing `ctx`. One
+  wrong summary produced dozens of alerts in a function (222 in one). The same mechanism accounted for 89-100% of the alerts of Git and curl; those
+  projects simply have few badly summarized calls. So the 0.014 / 0.063 of the first table was partly luck of the project.
+- **The fix** (a summary counts as a free only if the free is on every path from the entry to a return, with explicit entry and return markers, and
+  `#if`/`#else` as alternatives) brought the four development projects under 0.1 on both sides. It costs recall on Juliet CWE-415: 162 to 150 of 272
+  cases (variants 21 and 22, where the callee frees only if a global flag is set, a true double free). Use after free on CWE-416 is unchanged
+  (134/138).
+- **Coverage is part of the result.** A project where the extractor sees fewer than 3 `free` events per KLOC is reported as blind, whatever the alert rate:
+  it recognizes deallocators by name (`free`, the macros and aliases found in the sources and headers, and functions that free their parameter on
+  every path). nginx (pools: `ngx_pfree`, slab) and libxml2 (`xmlFree`, a function-pointer variable) are outside that, so the arm **has not been shown
+  to work on a project it was not adapted to**.
+- What this says about the first claim: under 0.1 alerts per KLOC holds on four projects after the extractor was adapted to each; the honest
+  statement is "on projects whose deallocators it recognizes, after the fixes", not "on real C code".
 
 ## Does it find real bugs? The 16 fix commits of Git (`src/graph/fixcommits.py`)
 
