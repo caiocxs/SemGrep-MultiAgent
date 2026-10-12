@@ -1,9 +1,9 @@
 # Event-graph analyzer (design sketch)
 
 Status: on branch `feat/graph-analyzer`. The schema, the path queries, the tree-sitter extractor, the scoring against Juliet and real
-projects, and the fix-commit evaluation exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`, 49 tests); the LLM
-judge was decided against. The tables below were measured at different versions of the extractor: the section "Other projects" (2026-10-12) says
-which numbers are current and which are development or held-out.
+projects, and the fix-commit evaluation exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`, 62 tests); the LLM
+judge was decided against. The tables above the section "No hand-written names" were measured at earlier versions of the extractor (with
+hand-written lists); that section has the current numbers.
 
 ## Why a second arm
 
@@ -122,6 +122,57 @@ The first table above is Git only, and Git is where the conventions were found. 
   to work on a project it was not adapted to**.
 - What this says about the first claim: under 0.1 alerts per KLOC holds on four projects after the extractor was adapted to each; the honest
   statement is "on projects whose deallocators it recognizes, after the fixes", not "on real C code".
+
+## No hand-written names: what the analyzer learns by itself (2026-10-12)
+
+The extractor first carried lists written by hand (`kfree`, `g_free`, `OPENSSL_free`, `FREE_AND_NULL`, `die`, `BUG`, macros with `ALLOC` in the
+name, `foreach` macros). Those lists were removed: only the C standard library is given (`free`; `malloc`, `calloc`, `realloc`, `strdup`,
+`strndup`; `exit`, `_exit`, `_Exit`, `abort`, `quick_exit`, `longjmp`, `thrd_exit`). Everything else comes from the code analyzed:
+
+| What | How it is found |
+|---|---|
+| Wrappers that free (`curlx_free`, `FREE_AND_NULL`, `xfree`) | `#define`s read as text from the sources and headers (the parser fails on headers such as curl's `curl_setup.h`); an alias of a name that frees is renamed, a function-like macro whose body calls something with a parameter, assigns a parameter or frees one is expanded at its calls |
+| Functions that free their parameter | summaries from their bodies: the free must lie on every path from the entry to a return (explicit entry and return markers) |
+| Allocators that assign their first argument (`CALLOC_ARRAY`) | the same macro expansion: the body assigns the parameter |
+| Loop macros (`kh_foreach`, `hashmap_for_each_entry`) | a `for`/`while` in the body, or a call with no `;` followed by a block, which the parser marks as missing |
+| Functions that never return (`die`, `BUG`, `usage`) | `_Noreturn`, `__attribute__((noreturn))` or a macro whose body is that attribute in the declarations; macros that call such a function; functions whose paths all end in one (their bodies) |
+| Release functions with no usable body (`g_free`, `OPENSSL_free`, `xmlFree`, a hook) | a three-signal model, calibrated on the project's own `free` and on what its bodies prove (`infer_releases`): the after-use rate of the argument at most twice that of `free`; the argument acquired (assigned from a call) at least half as often as `free`'s; the words of the name resemble those of the functions proven to free (a naive-Bayes model of the words, project prefixes ignored, a word seen in at least two proven releases) |
+
+Usage statistics alone (the first learned version) failed badly (hundreds of alerts per KLOC on double free, Juliet use after free at 98/138):
+a function whose argument is just never used afterwards is not necessarily a deallocator (`printLine(data)`, `parse_options(argc, argv)`, `sha1_f1(b, c, d)`
+are all last uses). The proven functions of the project give the missing signal: their names say what a deallocator looks like in that
+project. No language model is involved: it is the analyzer's own statistics, deterministic and reproducible.
+
+**What became of the old hand-written names** (the project's own code decides; counts are call sites):
+
+| Project | Recognized by the code | Not recognized |
+|---|---|---|
+| Git | `g_free` (learned); `FREE_AND_NULL` 363 (expanded macro); `die` 2968, `die_errno` 332, `BUG` 803, `usage` 103, `pthread_exit` 2 (declared noreturn) | - |
+| curl | - | `g_free` 7, `OPENSSL_free` 8 (libraries with no definition in the code, few uses) |
+| Redis | `xfree` 62 (alias of `free`); `die` 8, `usage` 17 (from their bodies) | `panic` 6, `OPENSSL_free` 2 |
+| OpenSSL | `OPENSSL_free` 3595 (learned); `usage` 20 | `CRYPTO_free` 15 (goes through a hook) |
+| PostgreSQL | `die` 28 (macro, declared noreturn) | `usage` 70, `OPENSSL_free` 2; **`pfree` (2616 uses), the project's own release: the name is one word and the model of words cannot see `free` in it** |
+
+**Alerts per KLOC without any list** (train / test of the split by file hash; the limit of the synthesis gate is 0.1):
+
+| Project (KLOC) | Free events per KLOC | Use after free | Double free | Role |
+|---|---|---|---|---|
+| Git (400) | 10.8 | 0.000 / 0.000 | 0.017 / 0.009 | development |
+| curl (267) | 10.5 | 0.016 / 0.093 | 0.021 / 0.080 | development |
+| Redis (320) | 7.3 | 0.071 / **0.231** | 0.004 / 0.042 | development |
+| OpenSSL (862) | 17.4 | 0.016 / 0.021 | 0.018 / 0.025 | development |
+| **tmux (109)** | **15.2** | **0.000 / 0.000** | 0.058 / 0.000 | **never seen** |
+| **PostgreSQL (1597)** | **3.9** | **0.006 / 0.005** | 0.002 / 0.005 | **never seen** |
+| nginx (242) | 0.5 | 0 / 0 | 0 / 0 | seen, **blind**: not a result |
+| libxml2 (190) | 0.1 | 0 / 0 | 0 / 0 | seen, **blind**: not a result |
+
+Juliet (training side, same data as the rule synthesis): CWE-416 134/138 cases with 0 false positives; CWE-415 150/272 with 0 false positives.
+
+Reading: the two projects the extractor had never seen pass the criterion written beforehand (coverage at least 3 events per KLOC and use after free at
+most 0.1 alerts/KLOC), with no list of names inside it. It is **not** a claim about all C code: nginx (pool allocators) and libxml2 (`xmlFree`, a function
+pointer) are outside what the analyzer can see and are reported as blind, PostgreSQL passes with a coverage just above the minimum because the model of
+names misses `pfree`, and Redis stays above 0.1 on one side. The CWE-415 recall on Juliet is lower than with the old lists (150 against 162 of 272) because
+the summaries that count a free only on every path cannot see the variants where a callee frees only if a global flag is set.
 
 ## Does it find real bugs? The 16 fix commits of Git (`src/graph/fixcommits.py`)
 

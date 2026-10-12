@@ -45,7 +45,7 @@ ORDER BY fi.path, origin.line, hit.line
 
 
 def connect(path=":memory:"):
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, check_same_thread=False)  # the extractor walks the files on a thread with a big stack
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA.read_text(encoding="utf-8"))
     return conn

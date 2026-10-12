@@ -44,6 +44,8 @@ its parameter somewhere", not "on every path", and macros are seen as the calls 
 
 import math
 import re
+import sys
+import threading
 from pathlib import Path
 
 import tree_sitter_c
@@ -72,6 +74,8 @@ MAX_STEPS = 4000         # events visited per site
 CALL_MARK = "<call:"     # detail of the marker event after each call: where a call to a function that never returns cuts the flow
 
 MAX_MACRO_DEPTH = 4
+BIG_RECURSION = 60000        # recursion limit while a file is walked (nested expressions of generated code)
+BIG_STACK = 256 * 1024 * 1024  # stack of the thread that walks it (smaller sizes are tried if the system refuses it)
 ENTRY, RETURN, END, NORETURN = "<entry>", "<return>", "<end>", "<noreturn>"  # details of the marker events of a function
 _SUBST = []  # stack of {macro parameter: argument path or None} while a macro body is being walked
 
@@ -1152,11 +1156,49 @@ def build(files, db=":memory:", headers=()):
     extractor.aliases, extractor.fn_macros, extractor.loop_macros = macro_table(definitions)
     extractor.noreturn |= declared_noreturn(sources, definitions)
     failed = []
-    for f in files:
+
+    def work():
+        for f in files:
+            sizes = (len(extractor.events), len(extractor.flow), len(extractor.call_args), len(extractor.deref_effects))
+            try:
+                extract_file(conn, f, extractor)
+            except (OSError, ValueError, RecursionError) as error:
+                # drop what this file added, so that half a function never reaches the graph
+                for items, size in zip((extractor.events, extractor.flow, extractor.call_args, extractor.deref_effects), sizes):
+                    del items[size:]
+                row = conn.execute("SELECT id FROM files WHERE path = ?", (str(f),)).fetchone()
+                if row is not None:
+                    conn.execute("DELETE FROM params WHERE func_id IN (SELECT id FROM functions WHERE file_id = ?)", (row[0],))
+                    conn.execute("DELETE FROM functions WHERE file_id = ?", (row[0],))
+                    conn.execute("DELETE FROM files WHERE id = ?", (row[0],))
+                failed.append((str(f), f"{type(error).__name__}: {error}"))
+
+    # Generated code has expressions nested thousands of levels deep: walk them on a thread with a big stack and a high recursion limit.
+    limit, stack = sys.getrecursionlimit(), threading.stack_size()
+    sys.setrecursionlimit(max(limit, BIG_RECURSION))
+    for size in (BIG_STACK, BIG_STACK // 2, BIG_STACK // 4, BIG_STACK // 16):  # the largest stack the system accepts
         try:
-            extract_file(conn, f, extractor)
-        except (OSError, ValueError) as error:
-            failed.append((str(f), str(error)))
+            threading.stack_size(size)
+            break
+        except ValueError:
+            continue
+    errors = []
+
+    def guarded():
+        try:
+            work()
+        except BaseException as error:  # the thread would only print it: a failed extraction must not look like an empty result
+            errors.append(error)
+
+    try:
+        worker = threading.Thread(target=guarded)
+        worker.start()
+        worker.join()
+        if errors:
+            raise errors[0]
+    finally:
+        sys.setrecursionlimit(limit)
+        threading.stack_size(stack)
     extractor.flush()
     resolve_calls(conn)
     return conn, failed
