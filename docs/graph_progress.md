@@ -124,6 +124,28 @@ names (`die`, `BUG`, `usage`...), and two name patterns (`*ALLOC*` macros assign
   reproducible); a local model confirming each candidate could be added, but nothing here shows it is needed, and it would be one more thing the
   numbers depend on.
 
+## Protocol: sub-word names and fresh projects (written on 2026-10-12 **before** the change)
+
+The PostgreSQL run showed that the model of name words misses `pfree` (2616 uses, the project's own release). Reading the code for the fix
+showed two causes, not one:
+
+1. **One word.** `pfree` is not split, so the word `free` that the model learned from `pg_free` or `list_free` is not seen in it.
+2. **A wrong negative example.** `pfree` has a body that hands its parameter to a function pointer, so it counts as a function "proven to free
+   nothing" and its own word becomes evidence against it. A function that passes its parameter on to another call has proven nothing.
+
+- **Change:** (a) a word the model has not seen that starts or ends with a word seen in at least MIN_SUPPORT proven releases (at least 4 letters;
+  the longest such word) takes that word's weight (`pfree`, `sdsfree`, `xfree`); (b) the negative examples are only functions with parameters that
+  are proven to free none **and** never pass any of them on to a call. No new threshold, no list of words.
+- **Checks written before the result:** Juliet unchanged (134/138 and 150/272, 0 false positives); the four development projects and PostgreSQL
+  stay under 0.1 or the change is reported as harmful; the table of what is learned is printed (is `pfree` now recognized, what else is added,
+  how many wrong names).
+- **Held-out:** two projects never seen, blobless clones at their head, all `.c` files, headers read for `#define`s: **vim** (`vim/vim`,
+  `vim_free`, heavy conditional code) and **SQLite** (`sqlite/sqlite`, `sqlite3_free`, `sqlite3DbFree`). Measured once, with the coverage rule (at
+  least 3 `free` events per KLOC, else blind) and success at most 0.1 use-after-free alerts/KLOC on all files. PostgreSQL, nginx and libxml2 are
+  re-measured and reported as seen.
+- **Known gap, not part of this change:** release through `&p` (`av_freep(&p)`, `avcodec_free_context(&ctx)`) is not learned: only by-value
+  arguments are measured.
+
 ## Where the arm stands (2026-10-12, no hand-written names)
 
 | Question | Status |
