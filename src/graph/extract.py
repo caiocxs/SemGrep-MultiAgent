@@ -22,6 +22,10 @@ Release macros: `#define NAME(p) do { free(p); (p) = NULL; } while (0)` and `#de
 `build`) are found before the extraction, and a macro that leads to a deallocator, directly or through other macros, is expanded at
 its calls with the arguments substituted. Other macros are not expanded.
 
+A summary says a function frees its parameter only if the free lies on every path from the entry to a return (a function that frees
+on an error path and returns a code is not a deallocator for its caller); a path that ends in `exit`/`die` is not a return.
+`#if`/`#else` branches are alternatives, not statements in sequence.
+
 Known limits (the graph is path-insensitive and intraprocedural except for the call summaries): conditions are not evaluated
 (both sides of a branch are feasible), `&p` passed to a function and aliases (`q = p`) are not followed, a summary says "frees
 its parameter somewhere", not "on every path", and macros are seen as the calls they look like.
@@ -47,6 +51,7 @@ NEVER_TRUE = {"0", "false", "FALSE"}
 MAX_SUMMARY_ROUNDS = 6
 
 MAX_MACRO_DEPTH = 4
+ENTRY, RETURN, END, NORETURN = "<entry>", "<return>", "<end>", "<noreturn>"  # details of the marker events of a function
 _SUBST = []  # stack of {macro parameter: argument path or None} while a macro body is being walked
 
 _PARSER = Parser(Language(tree_sitter_c.language()))
@@ -125,10 +130,11 @@ class _Function:
         self.scopes = []         # names declared in each enclosing block
 
     # -- events -------------------------------------------------------------------------------------------------
-    def event(self, kind, var, node):
+    def event(self, kind, var, node, detail=None):
         eid = self.x.next_id()
         row = node.start_point[0] if self.call_row is None else self.call_row
-        detail = self.lines[row].strip()[:200] if row < len(self.lines) else ""
+        if detail is None:
+            detail = self.lines[row].strip()[:200] if row < len(self.lines) else ""
         self.x.events.append((eid, self.func_id, row + 1, kind, var, detail))
         if kind in ("use", "free") and var:
             owner = self.deref_of.get(_BASE.split(var, 1)[0])
@@ -300,6 +306,7 @@ class _Function:
                     eid = self.event("call", target, arg)
                     self.x.call_args.append((eid, name, index, target, 1))
         if name in NORETURN_FUNCTIONS:
+            self.event("join", None, n, detail=NORETURN)  # marks the end of a path that never returns to the caller
             self.frontier = set()
 
     def expand(self, macro, args, call):
@@ -348,6 +355,23 @@ class _Function:
                 self.stmt(child)
         else:
             self.expr(n)
+
+    def _alternatives(self, n):
+        """`#if`/`#ifdef`/`#elif` with its `#else`: the branches are alternatives, not statements one after the other."""
+        skip = {c.id for c in (n.child_by_field_name("condition"), n.child_by_field_name("name"),
+                               n.child_by_field_name("alternative")) if c is not None}
+        entry = set(self.frontier)
+        for child in n.named_children:
+            if child.id not in skip:
+                self.stmt(child)
+        after_then = set(self.frontier)
+        self.frontier = entry
+        alternative = n.child_by_field_name("alternative")
+        if alternative is not None:
+            self.stmt(alternative)
+        self.frontier = after_then | self.frontier
+
+    s_preproc_if = s_preproc_ifdef = s_preproc_elif = s_preproc_elifdef = _alternatives
 
     def s_compound_statement(self, n):
         self.scopes.append([])
@@ -514,6 +538,7 @@ class _Function:
         for child in n.named_children:
             self.expr(child)
             self.use(path_of(child), child)
+        self.event("join", None, n, detail=RETURN)  # the path leaves the function here, even if it made no event before
         self.frontier = set()
 
     def _label(self, name, node):
@@ -616,7 +641,9 @@ def extract_file(conn, path, extractor=None):
         conn.executemany("INSERT INTO params VALUES (?, ?, ?)",
                          [(func_id, i, p) for i, p in enumerate(params) if p])
         builder = _Function(extractor, func_id, lines, [p for p in params if p])
+        builder.event("join", None, body, detail=ENTRY)  # a path with no event at all must still start somewhere
         builder.stmt(body)
+        builder.event("join", None, body, detail=END)  # falling off the end of the function is a return as well
         count += 1
     if own:
         extractor.flush()
@@ -641,12 +668,52 @@ def resolve_calls(conn):
     for func_id, idx, name in conn.execute("SELECT func_id, idx, name FROM params"):
         params.setdefault(func_id, {})[name] = idx
 
+    flow_cache = {}
+
+    def flow_of(func_id):
+        """(entry event, successors, exits) of a function; the exits are its explicit return and end markers."""
+        if func_id not in flow_cache:
+            ids = conn.execute("SELECT id, detail FROM events WHERE func_id = ? ORDER BY id", (func_id,)).fetchall()
+            out = {}
+            for src, dst in conn.execute("SELECT f.src, f.dst FROM flow f JOIN events e ON e.id = f.src WHERE e.func_id = ?",
+                                         (func_id,)):
+                out.setdefault(src, []).append(dst)
+            exits = {i for i, detail in ids if detail in (RETURN, END)}
+            flow_cache[func_id] = (ids[0][0] if ids else None, out, exits)
+        return flow_cache[func_id]
+
+    def on_every_path(func_id, free_ids):
+        """True when no return can be reached from the entry without passing one of the free events."""
+        entry, out, exits = flow_of(func_id)
+        if entry is None:
+            return False
+        if entry in free_ids:
+            return True
+        seen, stack = {entry}, [entry]
+        while stack:
+            node = stack.pop()
+            if node in exits:
+                return False
+            for nxt in out.get(node, ()):
+                if nxt not in free_ids and nxt not in seen:
+                    seen.add(nxt)
+                    stack.append(nxt)
+        return True
+
     def summaries():
         effects = set()
-        for func_id, var, kind in conn.execute("SELECT func_id, var, kind FROM events WHERE kind IN ('free', 'use')"):
+        frees = {}
+        for event_id, func_id, var, kind in conn.execute("SELECT id, func_id, var, kind FROM events WHERE kind IN ('free', 'use')"):
             idx = params.get(func_id, {}).get(var)
-            if idx is not None:
-                effects.add((func_id, idx, 0, "frees" if kind == "free" else "uses"))
+            if idx is None:
+                continue
+            if kind == "free":
+                frees.setdefault((func_id, idx), set()).add(event_id)
+            else:
+                effects.add((func_id, idx, 0, "uses"))
+        for (func_id, idx), ids in frees.items():
+            if on_every_path(func_id, ids):
+                effects.add((func_id, idx, 0, "frees"))
         for func_id, name, kind in conn.execute("SELECT func_id, param, effect FROM deref_effects"):
             idx = params.get(func_id, {}).get(name)
             if idx is not None:

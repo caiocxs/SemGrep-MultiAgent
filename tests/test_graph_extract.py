@@ -239,6 +239,25 @@ def test_release_macro_from_a_header(tmp_path):
     assert uaf(conn) == []
 
 
+def test_callee_that_frees_on_one_path_only_is_not_a_deallocator(tmp_path):
+    src = ("static int g(char *x, int e) {\n if (e) {\n  free(x);\n  return 1;\n }\n return 0;\n}\n"
+           "void f(char *p, int e) {\n g(p, e);\n p[0] = 1;\n}\n")
+    assert uaf(graph(tmp_path, src)) == []
+
+
+def test_callee_that_frees_on_every_returning_path_is_a_deallocator(tmp_path):
+    src = ("static void h(char *x, int e) {\n if (e) {\n  die(\"no\");\n }\n free(x);\n}\n"
+           "void f(char *p) {\n h(p, 0);\n p[0] = 1;\n}\n")
+    assert uaf(graph(tmp_path, src)) == [(8, 9, "p")]  # the path that dies never returns to the caller
+
+
+def test_if_else_directives_are_alternatives(tmp_path):
+    src = "void f(char *p) {\n#ifdef A\n free(p);\n#else\n p[0] = 1;\n#endif\n}\n"
+    assert uaf(graph(tmp_path, src)) == []
+    src = "void f(char *p) {\n#ifdef A\n free(p);\n#endif\n p[0] = 1;\n}\n"
+    assert uaf(graph(tmp_path, src)) == [(3, 5, "p")]
+
+
 def test_macro_that_does_not_release_is_not_expanded(tmp_path):
     src = "#define SHOW(x) printf(\"%s\", x)\nvoid f(char *p) {\n SHOW(p);\n p[0] = 1;\n free(p);\n}\n"
     assert uaf(graph(tmp_path, src)) == [] and dfree(graph(tmp_path, src)) == []
