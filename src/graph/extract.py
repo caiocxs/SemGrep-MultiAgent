@@ -18,6 +18,10 @@ a name declared in a block is a new variable when the block ends or is entered a
 name contains ALLOC assigns its first argument; a call with a block as argument (`foreach(h, k, v, { .. })`) is a loop that
 assigns its plain-identifier arguments.
 
+Release macros: `#define NAME(p) do { free(p); (p) = NULL; } while (0)` and `#define NAME free` (also in headers passed to
+`build`) are found before the extraction, and a macro that leads to a deallocator, directly or through other macros, is expanded at
+its calls with the arguments substituted. Other macros are not expanded.
+
 Known limits (the graph is path-insensitive and intraprocedural except for the call summaries): conditions are not evaluated
 (both sides of a branch are feasible), `&p` passed to a function and aliases (`q = p`) are not followed, a summary says "frees
 its parameter somewhere", not "on every path", and macros are seen as the calls they look like.
@@ -39,7 +43,11 @@ NORETURN_FUNCTIONS = {"exit", "_exit", "abort", "quick_exit", "die", "die_errno"
 ALLOC_MACRO = re.compile(r"^[A-Z][A-Z0-9_]*ALLOC[A-Z0-9_]*$")  # CALLOC_ARRAY(p, n), FLEX_ALLOC_STR(p, ...): assign their first argument
 ITERATION_MACRO = re.compile(r"for_?each", re.IGNORECASE)  # kh_foreach_value(h, v, free(v)), hashmap_for_each_entry(m, it, e, f)
 ALWAYS_TRUE = {"1", "true", "TRUE"}
+NEVER_TRUE = {"0", "false", "FALSE"}
 MAX_SUMMARY_ROUNDS = 6
+
+MAX_MACRO_DEPTH = 4
+_SUBST = []  # stack of {macro parameter: argument path or None} while a macro body is being walked
 
 _PARSER = Parser(Language(tree_sitter_c.language()))
 _WS = re.compile(r"\s+")
@@ -64,7 +72,8 @@ def path_of(node):
     if node is None:
         return None
     if node.type == "identifier":
-        return _text(node)
+        text = _text(node)
+        return _SUBST[-1].get(text, text) if _SUBST else text
     if node.type == "field_expression":
         base = path_of(node.child_by_field_name("argument"))
         field = node.child_by_field_name("field")
@@ -103,6 +112,8 @@ class _Function:
     def __init__(self, extractor, func_id, source_lines, params=()):
         self.x = extractor
         self.params = set(params)
+        self.macro_depth = 0
+        self.call_row = None     # while a macro body is walked, the line of the call, for the events it makes
         self.copy_of = {}        # local -> parameter it is a copy of (q = (T *)param)
         self.deref_of = {}       # local -> parameter whose pointee it holds (q = *param, `data = *dataPtr`)
         self.func_id = func_id
@@ -116,7 +127,7 @@ class _Function:
     # -- events -------------------------------------------------------------------------------------------------
     def event(self, kind, var, node):
         eid = self.x.next_id()
-        row = node.start_point[0]
+        row = node.start_point[0] if self.call_row is None else self.call_row
         detail = self.lines[row].strip()[:200] if row < len(self.lines) else ""
         self.x.events.append((eid, self.func_id, row + 1, kind, var, detail))
         if kind in ("use", "free") and var:
@@ -239,6 +250,18 @@ class _Function:
             self.expr(function)  # `p->fn(x)` dereferences p
         arguments = n.child_by_field_name("arguments")
         args = arguments.named_children if arguments is not None else []
+        for _ in range(MAX_MACRO_DEPTH):  # `#define my_free free`
+            alias = self.x.release_aliases.get(name)
+            if alias is None:
+                break
+            name = alias
+        macro = self.x.release_macros.get(name) if name else None
+        if macro is not None and name not in FREE_FUNCTIONS and name not in FREE_AND_RESET \
+                and self.macro_depth < MAX_MACRO_DEPTH:
+            for arg in args:
+                self.expr(arg)
+            self.expand(macro, args, n)
+            return
         if args and (any(a.type == "compound_statement" for a in args) or (name and ITERATION_MACRO.search(name))):
             self.iteration_macro(args)
             return
@@ -278,6 +301,25 @@ class _Function:
                     self.x.call_args.append((eid, name, index, target, 1))
         if name in NORETURN_FUNCTIONS:
             self.frontier = set()
+
+    def expand(self, macro, args, call):
+        """Walks the body of a release macro with its parameters replaced by the paths of the arguments."""
+        params, body = macro
+        mapping = {param: path_of(arg) for param, arg in zip(params, args)}
+        root = _macro_body(body)
+        if root is None:
+            return
+        outer = self.call_row
+        self.call_row = call.start_point[0] if outer is None else outer
+        self.macro_depth += 1
+        _SUBST.append(mapping)
+        try:
+            for child in root.named_children:
+                self.stmt(child)
+        finally:
+            _SUBST.pop()
+            self.macro_depth -= 1
+            self.call_row = outer
 
     def iteration_macro(self, args):
         """`foreach(h, k, v, { body })`: a loop whose plain-identifier arguments are assigned at every iteration."""
@@ -418,8 +460,9 @@ class _Function:
         self.frontier = set(self.frontier) | ctx["continues"]
         condition = n.child_by_field_name("condition")
         self.expr(condition)
-        for src in self.frontier:
-            self.x.flow.append((src, head))
+        if _text(_strip(condition) or condition) not in NEVER_TRUE:  # `do { .. } while (0)` runs once
+            for src in self.frontier:
+                self.x.flow.append((src, head))
         self.frontier = (set(self.frontier) if self._exit_when(condition) else set()) | ctx["breaks"]
 
     def s_switch_statement(self, n):
@@ -501,6 +544,8 @@ class Extractor:
     def __init__(self, conn):
         self.conn = conn
         self.events, self.flow, self.call_args, self.deref_effects = [], [], [], []
+        self.release_aliases = {}   # name -> name it stands for (`#define curlx_free free`)
+        self.release_macros = {}    # name -> (parameters, body) of a macro that leads to a deallocator
         self._next = (conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]) + 1
 
     def next_id(self):
@@ -633,10 +678,89 @@ def resolve_calls(conn):
     conn.commit()
 
 
-def build(files, db=":memory:"):
-    """Extracts every file into one graph and resolves the calls. Files that fail to parse are skipped and returned."""
+_BODY_CACHE = {}
+
+
+def _macro_body(body):
+    """The statements of a macro body as a compound_statement (parsed as the body of a function), or None."""
+    if body not in _BODY_CACHE:
+        source = ("void __macro(void) {" + body + ";\n}").encode("utf-8")  # a macro body is often an expression
+        tree = _PARSER.parse(source)
+        function = next((c for c in tree.root_node.children if c.type == "function_definition"), None)
+        _BODY_CACHE[body] = (tree, function.child_by_field_name("body") if function is not None else None)
+    return _BODY_CACHE[body][1]
+
+
+_DEFINE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)(\(([^)]*)\))?[ \t]*(.*)$")
+_CONTINUATION = re.compile(r"\\\r?\n")
+_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
+
+
+def collect_macros(files):
+    """
+    {name: [("alias", target) | ("fn", params, body), ...]} of the `#define`s in these files (also those inside `#if`).
+    Read as text, not through the parser: headers full of conditional code are often not valid C for it (the `#define`s of curl's
+    `curl_setup.h` sit inside an error node), and a definition is a line (with its continuations) anyway.
+    """
+    found = {}
+    for f in files:
+        try:
+            text = Path(f).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in _COMMENT.sub(" ", _CONTINUATION.sub(" ", text)).split("\n"):
+            m = _DEFINE.match(line)
+            if not m:
+                continue
+            name, has_params, params, value = m.group(1), m.group(2), m.group(3), m.group(4).strip()
+            if has_params is None:
+                if re.fullmatch(r"[A-Za-z_]\w*", value):
+                    found.setdefault(name, []).append(("alias", value))
+            else:
+                found.setdefault(name, []).append(("fn", [x.strip() for x in params.split(",") if x.strip()], value))
+    return found
+
+
+def release_macros(definitions):
+    """
+    Which macros lead to a deallocator, directly or through other macros (a fixed point), as (aliases, macros) for the extractor.
+    An alias of a deallocator wins over a function-like definition of the same name (a project often defines the same macro
+    several ways, by configuration).
+    """
+    known = set(FREE_FUNCTIONS) | set(FREE_AND_RESET)
+    aliases, macros = {}, {}
+    for _ in range(MAX_MACRO_DEPTH + 2):
+        pattern = re.compile(r"\b(?:" + "|".join(sorted(map(re.escape, known))) + r")\b\s*\(")
+        changed = False
+        for name, defs in definitions.items():
+            if name in known:
+                continue
+            for d in defs:
+                if d[0] == "alias" and d[1] in known:
+                    aliases[name] = d[1]
+                    known.add(name)
+                    changed = True
+                    break
+            else:
+                for d in defs:
+                    if d[0] == "fn" and pattern.search(d[2]):
+                        macros[name] = (d[1], d[2])
+                        known.add(name)
+                        changed = True
+                        break
+        if not changed:
+            break
+    return aliases, macros
+
+
+def build(files, db=":memory:", headers=()):
+    """
+    Extracts every file into one graph and resolves the calls. Files that fail to parse are skipped and returned. `headers` are
+    read only for their `#define`s of release macros (see the module docstring).
+    """
     conn = paths.connect(db)
     extractor = Extractor(conn)
+    extractor.release_aliases, extractor.release_macros = release_macros(collect_macros(list(files) + list(headers)))
     failed = []
     for f in files:
         try:

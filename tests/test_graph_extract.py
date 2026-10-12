@@ -197,3 +197,50 @@ def test_address_of_to_an_unknown_function_is_a_reset(tmp_path):
     assert uaf(graph(tmp_path, src)) == []
 
 
+def test_release_macro_that_is_an_alias_of_free(tmp_path):
+    src = "#define my_free free\nvoid f(char *p) {\n my_free(p);\n p[0] = 1;\n}\n"
+    assert uaf(graph(tmp_path, src)) == [(3, 4, "p")]
+
+
+def test_release_macro_with_a_reset_does_not_leave_a_dangling_pointer(tmp_path):
+    src = ("#define SAFE_FREE(x) do { free(x); (x) = NULL; } while (0)\n"
+           "void f(char *p) {\n SAFE_FREE(p);\n p[0] = 1;\n}\n")
+    assert uaf(graph(tmp_path, src)) == []
+
+
+def test_release_macro_without_a_reset_frees_and_a_do_while_zero_runs_once(tmp_path):
+    src = ("#define RELEASE(x) do { free(x); } while (0)\n"
+           "void f(char *p) {\n RELEASE(p);\n p[0] = 1;\n}\n")
+    conn = graph(tmp_path, src)
+    assert uaf(conn) == [(3, 4, "p")]
+    assert dfree(conn) == []  # the do { } while (0) has no back edge: it is not a repeated free
+
+
+def test_release_macro_defined_through_another_macro(tmp_path):
+    src = ("#define xfree free\n#define xsafefree(p) do { xfree(p); (p) = NULL; } while (0)\n"
+           "void f(char *a, char *b) {\n xsafefree(a);\n a[0] = 1;\n xfree(b);\n b[0] = 1;\n}\n")
+    assert uaf(graph(tmp_path, src)) == [(6, 7, "b")]
+
+
+def test_release_macro_on_a_field_path(tmp_path):
+    src = ("#define RELEASE(x) do { free(x); } while (0)\n"
+           "void f(struct s *c) {\n RELEASE(c->buf);\n c->buf[0] = 1;\n}\n")
+    assert uaf(graph(tmp_path, src)) == [(3, 4, "c->buf")]
+
+
+def test_release_macro_from_a_header(tmp_path):
+    header = tmp_path / "defs.h"
+    header.write_text("#define my_free(x) free(x)\n", encoding="utf-8")
+    source = tmp_path / "a.c"
+    source.write_text("void f(char *p) {\n my_free(p);\n p[0] = 1;\n}\n", encoding="utf-8")
+    conn, failed = extract.build([source], headers=[header])
+    assert failed == [] and uaf(conn) == [(2, 3, "p")]
+    conn, _ = extract.build([source])  # without the header the macro is an unknown call: p is only read
+    assert uaf(conn) == []
+
+
+def test_macro_that_does_not_release_is_not_expanded(tmp_path):
+    src = "#define SHOW(x) printf(\"%s\", x)\nvoid f(char *p) {\n SHOW(p);\n p[0] = 1;\n free(p);\n}\n"
+    assert uaf(graph(tmp_path, src)) == [] and dfree(graph(tmp_path, src)) == []
+
+

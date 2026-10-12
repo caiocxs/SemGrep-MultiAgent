@@ -82,7 +82,7 @@ def main():
     if args.negatives:
         files = collect_files([args.negatives])
         start = time.time()
-        real, failed = extract.build(files)
+        real, failed = extract.build(files, headers=sorted(Path(args.negatives).rglob("*.h")))
         print(f"\nReal-world: {len(files)} files, {_kloc(files):.0f} KLOC, "
               f"{real.execute('SELECT COUNT(*) FROM events').fetchone()[0]} events, extracted in {time.time() - start:.1f}s")
         start = time.time()
