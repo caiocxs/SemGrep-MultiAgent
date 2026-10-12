@@ -19,6 +19,26 @@ quiet on real C code (at most 0.1 alerts per KLOC on the Git sources, assumed co
 | 2026-10-09, 20:40 | Decision on the LLM judge (a filter that may only drop candidates) | **Not implemented**: the alerts are already under the limit (4 train, 7 test), the misses are of a kind a filter cannot add (derived pointers, structure lifetimes), and in the fix files it could only lose one of the 2 true alerts | Decision with numbers in `graph_analyzer.md` |
 | 2026-10-11 | The graph arm was separated from the rule-synthesis branch (it had been merged into it only to let a running experiment queue keep a script fix) | `feat/graph-analyzer` is `main` plus the graph work only; this file is its own log | Housekeeping |
 
+## Protocol for a second code base (written on 2026-10-11 **before** the run)
+
+Purpose: the conventions of the extractor were found by reading alerts on the Git sources, and the Git test side comes from the same
+project. A different project is the only clean test of whether 0.014 / 0.063 alerts per KLOC is a property of the method or of Git.
+
+- **Code base:** curl (`https://github.com/curl/curl.git`), a blobless clone next to the repository (`../curl`, not inside it), at its
+  current head. All `.c` files, as for Git (`lib/`, `src/`, `tests/`, `docs/examples/`). No file is excluded after seeing the output.
+- **No change to the extractor, the query or the lists of allocation and release names before or after the first measurement.** Names
+  curl uses that the extractor does not know (for example `Curl_safefree`) stay unknown: that is part of what is measured (it can only
+  lower recall or add alerts, and the alerts are then read, not fixed).
+- **Measured, once:** alerts per KLOC for use after free and for double free, on all curl files and on the two sides of the same split
+  by file hash (seed 0) that the synthesis uses; Juliet numbers do not change.
+- **Reading:** only after the numbers are written down here. All alerts of the use-after-free query are read (expected to be few); for
+  double free a sample of 30, picked by the sorted order of file name and line, not by what they look like.
+- **Fix commits of curl:** the same filter as for Git (`use[- ]after[- ]free|double[- ]free|\bfreed\b|memory after`, no merges, since
+  2018-01-01), whatever count it gives; same window of 10 lines; the filter is not adjusted after seeing the output.
+- **What counts as success:** the use-after-free query at or below 0.1 alerts/KLOC on curl as a whole. What counts as a result against
+  the method: above 0.1 there, which would mean the conventions are Git-specific. Either is reported as it comes out, and if the extractor is
+  changed afterwards for curl, the curl numbers are no longer a held-out test and the entry says so.
+
 ## Where the arm stands (2026-10-11)
 
 | Question | Status |
