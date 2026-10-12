@@ -84,6 +84,38 @@ that matters is the one measured **once** on projects not yet seen.
   either, the claim is restricted to the projects it was tuned on. All use-after-free alerts are read afterwards, up to 40 per project in
   sorted order of file and line.
 
+## Protocol: no hand-written names, the analyzer learns them (written on 2026-10-12 **before** the change)
+
+Request: the extractor must not be given alternatives of `free` (and the like) by hand; it has to associate them by itself. Today it carries
+lists written by hand: release names (`kfree`, `g_free`, `av_free`, `OPENSSL_free`...), `FREE_AND_NULL`-style macros, allocator names, noreturn
+names (`die`, `BUG`, `usage`...), and two name patterns (`*ALLOC*` macros assign their first argument, `*foreach*` macros are loops).
+
+- **What stays given:** only the C standard library as the starting point: `free` (release), `malloc`/`calloc`/`realloc`/`strdup`/`strndup`
+  (allocation), `exit`/`_exit`/`_Exit`/`abort`/`quick_exit` (the path ends). Constants of the language (`0`, `1`, `NULL`, `true`).
+- **What is inferred, from the project's own code, with no list:**
+  1. *A function that frees its parameter on every path* (already so, by summaries), now seeded by `free` alone, so `curl_dbg_free`,
+     `strbuf_release`-like or `ref_transaction_free`-like functions are found because their body ends in `free`.
+  2. *A macro that frees or assigns a parameter* (generic expansion of function-like macros whose body does either), replacing the lists of
+     `FREE_AND_NULL`-style and `ALLOC` macros.
+  3. *A function that never returns* (every path ends in a noreturn call or in another such function), replacing the list of `die`, `BUG`...
+  4. *A loop macro*: a call with a block argument, or a macro whose body contains `for`/`while`/`do`, replacing the `foreach` pattern.
+  5. *Release functions with no usable body* (a library, a function pointer, `xmlFree`, `OPENSSL_free` going through a hook): learned from how the
+     code uses them. For every callee name and argument position, over its call sites with a plain pointer argument, the **after-use rate** is the
+     share of sites where the argument variable is read, freed or passed again on some path after the call before it is reassigned. The rate of
+     `free` itself in the same project is the reference. A name is a release function if it has at least 8 sites and an after-use rate at most
+     `max(2 x the rate of free, 0.02)`. No other threshold and no project-specific value.
+- **Checks written before looking at results:** on the four development projects (Git, curl, Redis, OpenSSL) and Juliet: how many of the
+  names that used to be hand-listed are recovered by the inference (reported as a table), the alerts per KLOC (must stay under 0.1), and the
+  inferred names listed for reading (precision of the list reported, thresholds not changed by reading it; if the rule is changed, those projects
+  are development sets, which they already are).
+- **Held-out:** nginx and libxml2 were measured once (blind) and their most common release-like names were printed in that step, so they
+  are no longer untouched; two projects not seen at all are added: **tmux** (`xfree`, `free_*`) and **PostgreSQL** (`pfree`, memory
+  contexts). Measured once with the same coverage rule (at least 3 `free` events per KLOC, else blind) and success at most 0.1 alerts/KLOC
+  for use after free on all files. nginx and libxml2 are re-measured and reported as "seen".
+- **No language model is used for the association.** The names are associated from the code's own statistics (deterministic and
+  reproducible); a local model confirming each candidate could be added, but nothing here shows it is needed, and it would be one more thing the
+  numbers depend on.
+
 ## Where the arm stands (2026-10-12)
 
 | Question | Status |
