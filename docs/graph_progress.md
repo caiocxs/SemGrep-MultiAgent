@@ -64,6 +64,25 @@ not seen, and the coverage diagnostic is part of the criterion.
 - **Success on a project:** coverage at or above 3 events per KLOC and use after free at most 0.1 alerts/KLOC on all files. All alerts of the
   use-after-free query are read afterwards (a sample of 30 in sorted order of file and line for double free).
 
+## Protocol for two fresh projects (written on 2026-10-12 **before** the run, after the second iteration)
+
+Git, curl, Redis and OpenSSL are development sets (the extractor changed after seeing each of them). The claim "under 0.1 alerts per KLOC
+on real code" needs projects nobody tuned on. Same rules as the previous protocol, with the lesson of OpenSSL and Redis added: the number
+that matters is the one measured **once** on projects not yet seen.
+
+- **Projects:** nginx (`nginx/nginx`) and libxml2 (`GNOME/libxml2`), blobless clones next to the repository, head of the default branch,
+  all `.c` files, headers read for their `#define`s. libxml2 frees through its own `xmlFree` (a function pointer variable, which the
+  extractor cannot see through) and nginx through `ngx_free`/pools: both are expected to stress the name recognition, and that is
+  part of what is measured.
+- **No change** to the extractor, the query or the name lists before the numbers are written here; any later change makes the project a
+  development set and the entry says so.
+- **Measured once per project:** coverage (`free` events per KLOC), use after free and double free alerts per KLOC on all files and on
+  the train and test sides of the split by file hash (seed 0).
+- **Valid only with coverage:** below 3 `free` events per KLOC the project is reported as **blind**, not as passed.
+- **Success:** coverage at or above 3 per KLOC and use after free at most 0.1 alerts/KLOC on all files, on both projects. If it fails on
+  either, the claim is restricted to the projects it was tuned on. All use-after-free alerts are read afterwards, up to 40 per project in
+  sorted order of file and line.
+
 ## Where the arm stands (2026-10-11)
 
 | Question | Status |
