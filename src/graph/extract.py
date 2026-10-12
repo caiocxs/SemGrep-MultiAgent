@@ -18,9 +18,20 @@ a name declared in a block is a new variable when the block ends or is entered a
 name contains ALLOC assigns its first argument; a call with a block as argument (`foreach(h, k, v, { .. })`) is a loop that
 assigns its plain-identifier arguments.
 
-Release macros: `#define NAME(p) do { free(p); (p) = NULL; } while (0)` and `#define NAME free` (also in headers passed to
-`build`) are found before the extraction, and a macro that leads to a deallocator, directly or through other macros, is expanded at
-its calls with the arguments substituted. Other macros are not expanded.
+Nothing is listed by hand but the C standard library (`free`; `malloc`, `calloc`, `realloc`, `strdup`, `strndup`; `exit`, `abort`...).
+The rest is learned from the code:
+  - macros (`#define`s of the sources and of the headers passed to `build`): an object-like alias of a known name is renamed; a
+    function-like macro whose body calls something with a parameter, assigns a parameter or frees one is expanded at its calls with the
+    arguments substituted; one with a `for`/`while` in its body, or called with a block as an argument, is a loop that assigns its
+    plain-identifier arguments at every iteration;
+  - a function that frees its parameter on every path is a deallocator for its callers (summaries, to a fixed point);
+  - a function declared `noreturn` by the language (`_Noreturn`, `__attribute__((noreturn))`, or a macro whose body is that attribute), a
+    macro that calls such a function, and a function whose every path ends in a noreturn call or in another such function never
+    return, and the flow stops after their calls;
+  - a function with no usable body is a release function if three things hold (`infer_releases`): its arguments are almost never used
+    after the call, as `free`'s are not; they were acquired (assigned from a call) as often as `free`'s were; and its name looks like the
+    names of the functions that the code itself proves to free their parameter, by a small model of the name's words learned from
+    those proven examples against the functions proven not to free anything.
 
 A summary says a function frees its parameter only if the free lies on every path from the entry to a return (a function that frees
 on an error path and returns a code is not a deallocator for its caller); a path that ends in `exit`/`die` is not a return.
@@ -31,6 +42,7 @@ Known limits (the graph is path-insensitive and intraprocedural except for the c
 its parameter somewhere", not "on every path", and macros are seen as the calls they look like.
 """
 
+import math
 import re
 from pathlib import Path
 
@@ -39,16 +51,25 @@ from tree_sitter import Language, Parser
 
 from src.graph import paths
 
-FREE_FUNCTIONS = {"free", "kfree", "kvfree", "vfree", "g_free", "xfree", "av_free", "av_freep", "OPENSSL_free", "CRYPTO_free"}
-ALLOC_FUNCTIONS = {"malloc", "calloc", "realloc", "strdup", "strndup", "kmalloc", "kzalloc", "kcalloc", "g_malloc", "g_malloc0",
-                   "xmalloc", "xcalloc", "xrealloc", "xstrdup", "av_malloc", "OPENSSL_malloc", "alloca"}
-FREE_AND_RESET = {"FREE_AND_NULL", "free_and_null", "SAFE_FREE", "g_clear_pointer"}  # free the argument and set it to NULL
-NORETURN_FUNCTIONS = {"exit", "_exit", "abort", "quick_exit", "die", "die_errno", "BUG", "usage", "panic", "longjmp", "pthread_exit"}
-ALLOC_MACRO = re.compile(r"^[A-Z][A-Z0-9_]*ALLOC[A-Z0-9_]*$")  # CALLOC_ARRAY(p, n), FLEX_ALLOC_STR(p, ...): assign their first argument
-ITERATION_MACRO = re.compile(r"for_?each", re.IGNORECASE)  # kh_foreach_value(h, v, free(v)), hashmap_for_each_entry(m, it, e, f)
+# The C standard library is the only thing given. Every other release function, wrapper macro, allocator macro, noreturn function
+# and loop macro is found from the code being analyzed (see the module docstring), not listed here.
+FREE_FUNCTIONS = {"free"}
+ALLOC_FUNCTIONS = {"malloc", "calloc", "realloc", "strdup", "strndup"}
+NORETURN_FUNCTIONS = {"exit", "_exit", "_Exit", "abort", "quick_exit", "longjmp", "thrd_exit"}
 ALWAYS_TRUE = {"1", "true", "TRUE"}
 NEVER_TRUE = {"0", "false", "FALSE"}
 MAX_SUMMARY_ROUNDS = 6
+# Inference of release functions that have no usable body (a library, a function pointer, a hook): see `infer_releases`.
+MIN_SITES = 8            # call sites with a plain pointer argument needed to say anything about a name
+RATE_FACTOR = 2.0        # a release function may be followed by a use as often as `free` is, times this ...
+RATE_FLOOR = 0.02        # ... but never less than this
+ACQUIRED_FACTOR = 0.5    # the variable must have been acquired (assigned from a call) at least this often as free's argument is ...
+ACQUIRED_FLOOR = 0.2     # ... but never less than this
+COMMON_WORD = 0.25       # a word in more than this share of the names the model learns from is a project prefix (`curl`, `ngx`): it says nothing
+MIN_SUPPORT = 2          # a word must be seen in this many proven release functions to count as evidence
+MAX_SITES = 400          # sites sampled per name (evenly spaced)
+MAX_STEPS = 4000         # events visited per site
+CALL_MARK = "<call:"     # detail of the marker event after each call: where a call to a function that never returns cuts the flow
 
 MAX_MACRO_DEPTH = 4
 ENTRY, RETURN, END, NORETURN = "<entry>", "<return>", "<end>", "<noreturn>"  # details of the marker events of a function
@@ -231,8 +252,9 @@ class _Function:
 
     @staticmethod
     def _allocates(value):
+        """`p = f(..)`: p now holds what a call returned (an acquisition); for the queries it is a new value, like any assignment."""
         value = _strip(value)
-        return value is not None and value.type == "call_expression" and _called_name(value) in ALLOC_FUNCTIONS
+        return value is not None and value.type == "call_expression"
 
     def assign(self, n):
         left, right = n.child_by_field_name("left"), n.child_by_field_name("right")
@@ -257,34 +279,28 @@ class _Function:
         arguments = n.child_by_field_name("arguments")
         args = arguments.named_children if arguments is not None else []
         for _ in range(MAX_MACRO_DEPTH):  # `#define my_free free`
-            alias = self.x.release_aliases.get(name)
+            alias = self.x.aliases.get(name)
             if alias is None:
                 break
             name = alias
-        macro = self.x.release_macros.get(name) if name else None
-        if macro is not None and name not in FREE_FUNCTIONS and name not in FREE_AND_RESET \
-                and self.macro_depth < MAX_MACRO_DEPTH:
+        if args and (any(a.type == "compound_statement" for a in args) or name in self.x.loop_macros):
+            self.iteration_macro(args)
+            return
+        macro = self.x.fn_macros.get(name) if name and name not in FREE_FUNCTIONS and name not in ALLOC_FUNCTIONS else None
+        if macro is not None and self.macro_depth < MAX_MACRO_DEPTH:
             for arg in args:
                 self.expr(arg)
             self.expand(macro, args, n)
             return
-        if args and (any(a.type == "compound_statement" for a in args) or (name and ITERATION_MACRO.search(name))):
-            self.iteration_macro(args)
-            return
         for arg in args:
             self.expr(arg)
-        if name in FREE_FUNCTIONS or name in FREE_AND_RESET:
+        if name in FREE_FUNCTIONS:
             if args and path_of(args[0]):
                 self.event("free", path_of(args[0]), n)
-                if name in FREE_AND_RESET:
-                    self.event("reset", path_of(args[0]), n)
             return
         if name in ALLOC_FUNCTIONS:
-            if name in ("realloc", "xrealloc") and args:
+            if name == "realloc" and args:
                 self.use(path_of(args[0]), n)
-            return
-        if name and ALLOC_MACRO.match(name) and args and path_of(args[0]):
-            self.event("alloc", path_of(args[0]), n)
             return
         for index, arg in enumerate(args):
             path = path_of(arg)
@@ -295,8 +311,9 @@ class _Function:
             else:
                 eid = self.event("call", path, n)
                 self.x.call_args.append((eid, name, index, path, 0))
-        for index, arg in enumerate(args):  # `&p`: the callee may free, use or fill in p (decided when the callee is known)
-            if arg.type == "pointer_expression" and arg.children and arg.children[0].type == "&":
+        for index, arg in enumerate(args):  # `&p`, also `(void **)&p`: the callee may free, use or fill in p (decided when it is known)
+            arg = _strip(arg)
+            if arg is not None and arg.type == "pointer_expression" and arg.children and arg.children[0].type == "&":
                 target = path_of(arg.child_by_field_name("argument"))
                 if not target:
                     continue
@@ -305,9 +322,11 @@ class _Function:
                 else:
                     eid = self.event("call", target, arg)
                     self.x.call_args.append((eid, name, index, target, 1))
-        if name in NORETURN_FUNCTIONS:
+        if name in self.x.noreturn:
             self.event("join", None, n, detail=NORETURN)  # marks the end of a path that never returns to the caller
             self.frontier = set()
+        elif name:
+            self.event("join", None, n, detail=f"{CALL_MARK}{name}>")  # where the flow stops if `name` turns out never to return
 
     def expand(self, macro, args, call):
         """Walks the body of a release macro with its parameters replaced by the paths of the arguments."""
@@ -373,10 +392,28 @@ class _Function:
 
     s_preproc_if = s_preproc_ifdef = s_preproc_elif = s_preproc_elifdef = _alternatives
 
+    @staticmethod
+    def _unterminated_call(node):
+        """`NAME(args)` with no `;` (the parser marks it missing): what a macro that opens a block looks like, `NAME(args) { .. }`."""
+        if node.type != "expression_statement" or not any(c.is_missing for c in node.children):
+            return None
+        call = next(iter(node.named_children), None)
+        return call if call is not None and call.type == "call_expression" else None
+
     def s_compound_statement(self, n):
         self.scopes.append([])
-        for child in n.named_children:
+        children = n.named_children
+        i = 0
+        while i < len(children):
+            child, following = children[i], children[i + 1] if i + 1 < len(children) else None
+            call = self._unterminated_call(child)
+            if call is not None and following is not None and following.type == "compound_statement":
+                arguments = call.child_by_field_name("arguments")
+                self.iteration_macro((list(arguments.named_children) if arguments is not None else []) + [following])
+                i += 2
+                continue
             self.stmt(child)
+            i += 1
         for name in self.scopes.pop():  # the block ends: those names are gone (a later same name is another variable)
             self.event("reset", name, n)
 
@@ -416,7 +453,8 @@ class _Function:
         return self.loops.pop()
 
     def _exit_when(self, condition):
-        return not (condition is not None and _text(_strip(condition) or condition) in ALWAYS_TRUE)
+        """Can the loop be left through its condition? Not with no condition (`for (;;)`) or with a constant true one."""
+        return condition is not None and _text(_strip(condition) or condition) not in ALWAYS_TRUE
 
     def s_while_statement(self, n):
         head = self.join(n)
@@ -569,8 +607,10 @@ class Extractor:
     def __init__(self, conn):
         self.conn = conn
         self.events, self.flow, self.call_args, self.deref_effects = [], [], [], []
-        self.release_aliases = {}   # name -> name it stands for (`#define curlx_free free`)
-        self.release_macros = {}    # name -> (parameters, body) of a macro that leads to a deallocator
+        self.aliases = {}           # name -> name it stands for (`#define my_free free`)
+        self.fn_macros = {}         # name -> (parameters, body) of a function-like macro that is expanded at its calls
+        self.loop_macros = set()    # names of macros that are loops
+        self.noreturn = set(NORETURN_FUNCTIONS)  # the standard library's, plus what the code declares noreturn
         self._next = (conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]) + 1
 
     def next_id(self):
@@ -650,8 +690,8 @@ def extract_file(conn, path, extractor=None):
     return count
 
 
-def resolve_calls(conn):
-    """Binds call arguments to callees and turns each call event into free/use/join (see the module docstring)."""
+def _bind_callees(conn):
+    """Finds the function each call event calls, by file first and then by a unique name."""
     by_file = {(f, n): i for i, f, n in conn.execute("SELECT id, file_id, name FROM functions")}
     by_name = {}
     for i, n in conn.execute("SELECT id, name FROM functions"):
@@ -664,10 +704,226 @@ def resolve_calls(conn):
         if callee is None and len(by_name.get(name, [])) == 1:
             callee = by_name[name][0]
         conn.execute("UPDATE call_args SET callee_id = ? WHERE call_event = ?", (callee, event_id))
+
+def _params_of(conn):
     params = {}
     for func_id, idx, name in conn.execute("SELECT func_id, idx, name FROM params"):
         params.setdefault(func_id, {})[name] = idx
+    return params
 
+
+def _cut_noreturn(conn):
+    """
+    Finds the functions that never return (no return or end marker is reachable from the entry, to a fixed point: a function whose
+    paths all end in a call to one of them never returns either) and cuts the flow after every call to them.
+    """
+    out, entry, exits, name_of, marks = {}, {}, {}, {}, {}
+    for src, dst in conn.execute("SELECT src, dst FROM flow"):
+        out.setdefault(src, []).append(dst)
+    for func_id, name in conn.execute("SELECT id, name FROM functions"):
+        name_of[func_id] = name
+    for event_id, func_id, detail in conn.execute("SELECT id, func_id, detail FROM events ORDER BY id"):
+        entry.setdefault(func_id, event_id)
+        if detail in (RETURN, END):
+            exits.setdefault(func_id, set()).add(event_id)
+        elif detail.startswith(CALL_MARK):
+            marks.setdefault(detail[len(CALL_MARK):-1], []).append(event_id)
+    never, cut = set(), []
+    for _ in range(MAX_SUMMARY_ROUNDS):
+        candidates = {}
+        for func_id, name in name_of.items():
+            if name in never or name in NORETURN_FUNCTIONS or func_id not in entry:
+                continue
+            seen, stack, returns = {entry[func_id]}, [entry[func_id]], False
+            while stack and not returns:
+                node = stack.pop()
+                if node in exits.get(func_id, ()):
+                    returns = True
+                    break
+                for nxt in out.get(node, ()):
+                    if nxt not in seen:
+                        seen.add(nxt)
+                        stack.append(nxt)
+            candidates[name] = candidates.get(name, True) and not returns  # every definition of the name must be noreturn
+        found = {name for name, ok in candidates.items() if ok}
+        if not found:
+            break
+        never |= found
+        for name in found:
+            for mark in marks.get(name, ()):
+                if out.pop(mark, None) is not None:
+                    cut.append(mark)
+    conn.executemany("DELETE FROM flow WHERE src = ?", [(m,) for m in cut])
+    return never
+
+
+def _reaches_use(out, kind, var_of, calls, start, var):
+    """
+    True if `var` is read, freed or passed on to any call on some path after `start` before it is given a new value (`calls` are the
+    call events: a call that the summaries say does nothing with the parameter still received the variable); None if the walk is too long.
+    """
+    seen, stack, steps = set(), list(out.get(start, ())), 0
+    while stack:
+        node = stack.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        steps += 1
+        if steps > MAX_STEPS:
+            return None
+        other = var_of[node]
+        if other is not None:
+            k = kind[node]
+            if (k in ("use", "free") or node in calls) and (other == var or other.startswith((var + "->", var + ".", var + "["))):
+                return True
+            if k in ("reset", "alloc") and (other == var or var.startswith((other + "->", other + ".", other + "["))
+                                            or "[" + other + "]" in var):
+                continue
+        stack.extend(out.get(node, ()))
+    return False
+
+
+def _acquired(inn, kind, var_of, start, var):
+    """True if, going back from `start`, the variable was last given a value by a call (`p = f(..)`) on some path."""
+    seen, stack, steps = set(), list(inn.get(start, ())), 0
+    while stack:
+        node = stack.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        steps += 1
+        if steps > MAX_STEPS:
+            return None
+        if var_of[node] == var and kind[node] in ("reset", "alloc"):
+            if kind[node] == "alloc":
+                return True
+            continue
+        stack.extend(inn.get(node, ()))
+    return False
+
+
+def _words(name):
+    """The lower-case words of a function name: `ngx_free_chain` and `xmlFreeDoc` give {ngx, free, chain} and {xml, free, doc}."""
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name)
+    return {w for w in re.split(r"[^A-Za-z0-9]+", spaced.lower()) if len(w) >= 2 and not w.isdigit()}
+
+
+def _name_model(conn):
+    """
+    A small model of the words of release function names, learned from this code: the positives are the functions proven to free a
+    parameter on every path (and the seed `free`), the negatives the functions with parameters that are proven to free none.
+    Returns score(name) -> (sum of the log-odds of the informative words seen in the examples, whether one of them was seen in at least
+    MIN_SUPPORT positives).
+    """
+    positives = {row[0] for row in conn.execute(
+        "SELECT DISTINCT f.name FROM summaries s JOIN functions f ON f.id = s.func_id WHERE s.effect = 'frees' AND s.deref = 0")}
+    positives |= set(FREE_FUNCTIONS)
+    freeing = {row[0] for row in conn.execute("SELECT DISTINCT f.name FROM summaries s JOIN functions f ON f.id = s.func_id "
+                                              "WHERE s.effect = 'frees'")}
+    with_params = {row[0] for row in conn.execute("SELECT DISTINCT f.name FROM params p JOIN functions f ON f.id = p.func_id")}
+    negatives = with_params - freeing - positives
+    pos, neg = {}, {}
+    for names, table in ((positives, pos), (negatives, neg)):
+        for name in names:
+            for word in _words(name):
+                table[word] = table.get(word, 0) + 1
+    p_total, n_total = len(positives), len(negatives)
+
+    def informative(word):
+        return (pos.get(word, 0) + neg.get(word, 0)) <= COMMON_WORD * (p_total + n_total)
+
+    def score(name):
+        total, supported = 0.0, False
+        for word in _words(name):
+            if (word not in pos and word not in neg) or not informative(word):
+                continue  # a word the code never showed, or one every name has, says nothing
+            total += math.log((pos.get(word, 0) + 1) / (p_total + 2)) - math.log((neg.get(word, 0) + 1) / (n_total + 2))
+            supported = supported or pos.get(word, 0) >= MIN_SUPPORT
+        return total, supported
+
+    return score
+
+
+def infer_releases(conn):
+    """
+    Release functions with no usable body (a library, a function pointer such as `xmlFree`, a hook), learned from this code. Three
+    things must hold for a callee name and argument position, over its call sites with a plain pointer argument (at least MIN_SITES):
+      - the after-use rate, the share of sites where the variable is used, freed or passed again after the call, on some path, before
+        it is reassigned, is at most max(RATE_FACTOR x the rate of `free` in the same code, RATE_FLOOR);
+      - the variable was acquired (assigned from a call, on some path) at least ACQUIRED_FACTOR times as often as `free`'s argument
+        (and at least ACQUIRED_FLOOR): a last use of a parameter or a constant is not a release;
+      - the name's words, by `_name_model`, look like the names of the functions the code proves to free their parameters.
+    Returns {(name, argument index): (sites, after-use rate, acquired rate, name score)}.
+    """
+    out, inn, kind, var_of = {}, {}, {}, {}
+    for src, dst in conn.execute("SELECT src, dst FROM flow"):
+        out.setdefault(src, []).append(dst)
+        inn.setdefault(dst, []).append(src)
+    for event_id, k, var in conn.execute("SELECT id, kind, var FROM events"):
+        kind[event_id], var_of[event_id] = k, var
+    call_events = set()
+    sites = {}
+    for event_id, name, index, var in conn.execute("SELECT call_event, callee_name, arg_index, var FROM call_args WHERE addr = 0"):
+        call_events.add(event_id)
+        sites.setdefault((name, index), []).append((event_id, var))
+
+    def measure(items):
+        step = max(1, len(items) // MAX_SITES)
+        used = acq = total = 0
+        for event_id, var in items[::step]:
+            after = _reaches_use(out, kind, var_of, call_events, event_id, var)
+            got = _acquired(inn, kind, var_of, event_id, var)
+            if after is None or got is None:
+                continue
+            total += 1
+            used += bool(after)
+            acq += bool(got)
+        return (used / total, acq / total, total) if total else (None, None, 0)
+
+    direct = [(e, var_of[e]) for e, k in sorted(kind.items()) if k == "free" and e not in call_events and var_of[e]]
+    free_used, free_acquired, _ = measure(direct)
+    max_used = max(RATE_FACTOR * (free_used or 0.0), RATE_FLOOR)
+    min_acquired = max(ACQUIRED_FACTOR * (free_acquired or 0.0), ACQUIRED_FLOOR)
+    score = _name_model(conn)
+    found = {}
+    for (name, index), items in sites.items():
+        if len(items) < MIN_SITES or all(kind[e] == "free" for e, _ in items):
+            continue
+        value, seen_positive = score(name)
+        if value <= 0 or not seen_positive:
+            continue  # cheapest test first: the name must look like a release function
+        used, acquired, total = measure(items)
+        if total >= MIN_SITES and used <= max_used and acquired >= min_acquired:
+            found[(name, index)] = (len(items), used, acquired, value)
+    return found
+
+
+def resolve_calls(conn, infer=True):
+    """Binds call arguments to callees, cuts the flow after functions that never return, summarizes what functions do to their
+    parameters and, with `infer`, learns the release functions that have no usable body (see the module docstring)."""
+    _bind_callees(conn)
+    _cut_noreturn(conn)
+    params = _params_of(conn)
+    inferred = set()
+    _summarize(conn, params, inferred)
+    learned = {}
+    if infer:
+        for _ in range(2):  # a wrapper of a learned release function is a release function too
+            found = infer_releases(conn)
+            new = {k: v for k, v in found.items() if k not in inferred}
+            if not new:
+                break
+            learned.update(new)
+            inferred |= set(new)
+            _summarize(conn, params, inferred)
+    conn.execute("DELETE FROM inferred_release")
+    conn.executemany("INSERT INTO inferred_release VALUES (?, ?, ?, ?, ?, ?)",
+                     [(n, i, c, r, a, w) for (n, i), (c, r, a, w) in sorted(learned.items())])
+    conn.commit()
+
+
+def _summarize(conn, params, inferred):
+    """Turns each call event into free/use/reset/join from what the callees do to their parameters, to a fixed point."""
     flow_cache = {}
 
     def flow_of(func_id):
@@ -720,15 +976,17 @@ def resolve_calls(conn):
                 effects.add((func_id, idx, 1, {"free": "frees", "use": "uses", "reset": "resets"}[kind]))
         return effects
 
-    calls = conn.execute("SELECT call_event, callee_id, arg_index, addr FROM call_args").fetchall()
+    calls = conn.execute("SELECT call_event, callee_id, arg_index, addr, callee_name FROM call_args").fetchall()
     for _ in range(MAX_SUMMARY_ROUNDS):
         effects = summaries()
         changed = 0
-        for event_id, callee, index, addr in calls:
+        for event_id, callee, index, addr, name in calls:
             if callee is not None and (callee, index, addr, "resets") in effects:
                 kind = "reset"  # the callee assigns *param: after the call p holds another value (e.g. a pop of a list head)
             elif callee is not None and (callee, index, addr, "frees") in effects:
                 kind = "free"
+            elif not addr and (name, index) in inferred:
+                kind = "free"  # learned from how the code uses it (`infer_releases`)
             elif callee is not None and (callee, index, addr, "uses") in effects:
                 kind = "use"
             elif addr:
@@ -783,41 +1041,103 @@ def collect_macros(files):
             if has_params is None:
                 if re.fullmatch(r"[A-Za-z_]\w*", value):
                     found.setdefault(name, []).append(("alias", value))
+                elif value:
+                    found.setdefault(name, []).append(("value", value))
             else:
                 found.setdefault(name, []).append(("fn", [x.strip() for x in params.split(",") if x.strip()], value))
     return found
 
 
-def release_macros(definitions):
+def _relevant(params, body):
+    """Does the body do something with a parameter that matters for lifetimes: call something with it, assign it?"""
+    plain = re.sub(r"\bsizeof\b", " ", body)
+    for param in params:
+        word = re.escape(param)
+        if re.search(r"\b[A-Za-z_]\w*\s*\([^;{}]*\b" + word + r"\b", plain):
+            return True
+        if re.search(r"\b" + word + r"\b\s*\)?\s*=(?!=)", plain):
+            return True
+    return False
+
+
+def macro_table(definitions):
     """
-    Which macros lead to a deallocator, directly or through other macros (a fixed point), as (aliases, macros) for the extractor.
-    An alias of a deallocator wins over a function-like definition of the same name (a project often defines the same macro
-    several ways, by configuration).
+    From the `#define`s: ({name: target} aliases, {name: (parameters, body)} macros to expand, {name} loop macros). An alias of a name
+    that frees (the seed `free` or a macro that reaches it) wins over the other definitions of the same name (a project often defines
+    one macro several ways, by configuration).
     """
-    known = set(FREE_FUNCTIONS) | set(FREE_AND_RESET)
-    aliases, macros = {}, {}
+    seeds = FREE_FUNCTIONS | ALLOC_FUNCTIONS | NORETURN_FUNCTIONS
+    frees = set(FREE_FUNCTIONS)
+    aliases, macros, loops = {}, {}, set()
     for _ in range(MAX_MACRO_DEPTH + 2):
-        pattern = re.compile(r"\b(?:" + "|".join(sorted(map(re.escape, known))) + r")\b\s*\(")
+        pattern = re.compile(r"\b(?:" + "|".join(sorted(map(re.escape, frees))) + r")\b\s*\(")
         changed = False
         for name, defs in definitions.items():
-            if name in known:
+            if name in frees or name in seeds:
                 continue
-            for d in defs:
-                if d[0] == "alias" and d[1] in known:
-                    aliases[name] = d[1]
-                    known.add(name)
-                    changed = True
-                    break
-            else:
-                for d in defs:
-                    if d[0] == "fn" and pattern.search(d[2]):
-                        macros[name] = (d[1], d[2])
-                        known.add(name)
-                        changed = True
-                        break
+            target = next((d[1] for d in defs if d[0] == "alias" and d[1] in frees), None)
+            if target is not None:
+                aliases[name] = target
+                frees.add(name)
+                changed = True
+                continue
+            definition = next((d for d in defs if d[0] == "fn" and pattern.search(d[2])), None)
+            if definition is not None:
+                macros[name] = (definition[1], definition[2])
+                frees.add(name)
+                changed = True
         if not changed:
             break
-    return aliases, macros
+    for name, defs in definitions.items():
+        if name in seeds or name in aliases or name in macros:
+            continue
+        targets = {d[1] for d in defs if d[0] == "alias"}
+        fns = [d for d in defs if d[0] == "fn"]
+        if len(targets) == 1 and not fns:
+            aliases[name] = next(iter(targets))
+            continue
+        for d in fns:
+            body = d[2]
+            if re.search(r"\bfor\s*\(|\bwhile\s*\((?!\s*0\s*\))", body):
+                loops.add(name)
+                break
+            if _relevant(d[1], body):
+                macros[name] = (d[1], body)
+                break
+    return aliases, macros, loops
+
+
+_NORETURN_ATTRIBUTE = r"_Noreturn|__attribute__\s*\(\(\s*_*noreturn_*\s*\)\)|__declspec\s*\(\s*noreturn\s*\)|\[\[\s*noreturn\s*\]\]"
+
+
+def declared_noreturn(files, definitions):
+    """
+    Names the code declares as never returning: `_Noreturn void f(..)`, `void f(..) __attribute__((noreturn));`, and the same through a
+    macro whose body is that attribute (`#define NORETURN __attribute__((__noreturn__))`); then the function-like macros that call one
+    of those names (`#define BUG(...) BUG_fl(__FILE__, __LINE__, __VA_ARGS__)`), to a fixed point.
+    """
+    attribute = {name for name, defs in definitions.items()
+                 if any(d[0] == "value" and re.search(_NORETURN_ATTRIBUTE, d[1]) for d in defs)}
+    marker = "|".join([_NORETURN_ATTRIBUTE] + [r"\b" + re.escape(n) + r"\b" for n in sorted(attribute)])
+    before = re.compile(r"(?:" + marker + r")[^;{}()]*?\b([A-Za-z_]\w*)\s*\(")
+    after = re.compile(r"\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:" + marker + r")\s*[;{]")
+    names = set()
+    for f in files:
+        try:
+            text = _COMMENT.sub(" ", Path(f).read_text(encoding="utf-8", errors="replace"))
+        except OSError:
+            continue
+        for pattern in (before, after):
+            names.update(m.group(1) for m in pattern.finditer(text))
+    names -= attribute
+    for _ in range(MAX_MACRO_DEPTH + 2):
+        pattern = re.compile(r"\b(?:" + "|".join(sorted(map(re.escape, names | NORETURN_FUNCTIONS))) + r")\b\s*\(")
+        grown = {name for name, defs in definitions.items() if name not in names
+                 and any(d[0] == "fn" and pattern.search(d[2]) for d in defs)}
+        if not grown:
+            break
+        names |= grown
+    return names
 
 
 def build(files, db=":memory:", headers=()):
@@ -827,7 +1147,10 @@ def build(files, db=":memory:", headers=()):
     """
     conn = paths.connect(db)
     extractor = Extractor(conn)
-    extractor.release_aliases, extractor.release_macros = release_macros(collect_macros(list(files) + list(headers)))
+    sources = list(files) + list(headers)
+    definitions = collect_macros(sources)
+    extractor.aliases, extractor.fn_macros, extractor.loop_macros = macro_table(definitions)
+    extractor.noreturn |= declared_noreturn(sources, definitions)
     failed = []
     for f in files:
         try:

@@ -83,3 +83,15 @@ CREATE TABLE IF NOT EXISTS params (
     name    TEXT NOT NULL,
     PRIMARY KEY (func_id, idx)
 );
+
+-- Release functions learned from how the code uses them (no list, no body): the name, the argument position, the number of call sites
+-- with a plain pointer argument and the share of them followed by a use of that argument.
+CREATE TABLE IF NOT EXISTS inferred_release (
+    name      TEXT NOT NULL,
+    arg_index INTEGER NOT NULL,
+    sites     INTEGER NOT NULL,
+    rate      REAL NOT NULL,      -- share of the sites followed by a use of the argument
+    acquired  REAL NOT NULL,      -- share of the sites where the argument was assigned from a call before
+    score     REAL NOT NULL,      -- log-odds of the words of the name, learned from the functions proven to free their parameter
+    PRIMARY KEY (name, arg_index)
+);

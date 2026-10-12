@@ -144,9 +144,13 @@ def test_variable_declared_in_a_loop_body_is_new_each_iteration(tmp_path):
     assert uaf(graph(tmp_path, src)) == []
 
 
-def test_alloc_macro_assigns_its_first_argument(tmp_path):
-    src = "void f(struct s *c) {\n free(c->items);\n CALLOC_ARRAY(c->items, 4);\n c->items[0] = 1;\n}\n"
+def test_macro_that_assigns_its_first_argument_is_found_from_its_definition(tmp_path):
+    macro = "#define MAKE_ARRAY(x, n) (x) = xcalloc((n), sizeof(*(x)))\n"
+    src = macro + "void f(struct s *c) {\n free(c->items);\n MAKE_ARRAY(c->items, 4);\n c->items[0] = 1;\n}\n"
     assert uaf(graph(tmp_path, src)) == []
+    # the same call with no definition of the macro anywhere: nothing says it assigns, the pointer is read after the free
+    src = "void f(struct s *c) {\n free(c->items);\n MAKE_ARRAY(c->items, 4);\n c->items[0] = 1;\n}\n"
+    assert uaf(graph(tmp_path, src)) == [(2, 3, "c->items"), (2, 4, "c->items")]
 
 
 def test_iteration_macro_assigns_its_variable_each_iteration(tmp_path):
@@ -154,9 +158,89 @@ def test_iteration_macro_assigns_its_variable_each_iteration(tmp_path):
     assert dfree(graph(tmp_path, src)) == []
 
 
-def test_free_and_null_macro(tmp_path):
-    src = "void f(char *p) {\n FREE_AND_NULL(p);\n p[0] = 1;\n}\n"
+def test_free_and_null_macro_is_found_from_its_definition(tmp_path):
+    macro = "#define CLEAR(p) do { free(p); (p) = NULL; } while (0)\n"
+    assert uaf(graph(tmp_path, macro + "void f(char *p) {\n CLEAR(p);\n p[0] = 1;\n}\n")) == []
+
+
+def test_noreturn_function_is_found_from_its_body(tmp_path):
+    fatal = "static void fatal(const char *m) {\n log_it(m);\n exit(1);\n}\n"
+    src = fatal + "void f(char *p, int c) {\n if (c) {\n  free(p);\n  fatal(\"x\");\n }\n p[0] = 1;\n}\n"
+    assert uaf(graph(tmp_path, src)) == []  # fatal never returns, so the free does not reach the use
+    src = "void f(char *p, int c) {\n if (c) {\n  free(p);\n  fatal(\"x\");\n }\n p[0] = 1;\n}\n"
+    assert uaf(graph(tmp_path, src)) == [(3, 6, "p")]  # with no body for fatal, nothing says it ends the path
+
+
+def test_noreturn_through_another_noreturn_function(tmp_path):
+    src = ("static void fatal(const char *m) {\n exit(1);\n}\n"
+           "static void bug(const char *m) {\n fatal(m);\n}\n"
+           "void f(char *p) {\n free(p);\n bug(\"x\");\n p[0] = 1;\n}\n")
     assert uaf(graph(tmp_path, src)) == []
+
+
+def test_function_that_loops_forever_does_not_return(tmp_path):
+    src = ("static void serve(void) {\n for (;;) {\n  handle();\n }\n}\n"
+           "void f(char *p) {\n free(p);\n serve();\n p[0] = 1;\n}\n")
+    assert uaf(graph(tmp_path, src)) == []
+
+
+def test_thin_wrapper_macro_around_a_function_that_frees(tmp_path):
+    src = ("static void impl_free(char *x, int line) {\n free(x);\n}\n#define my_free(x) impl_free(x, 7)\n"
+           "void f(char *p) {\n my_free(p);\n p[0] = 1;\n}\n")
+    assert uaf(graph(tmp_path, src)) == [(6, 7, "p")]
+
+
+def test_loop_macro_is_found_from_its_body(tmp_path):
+    macro = "#define EACH(i, n) for ((i) = 0; (i) < (n); (i)++)\n"
+    src = macro + "void f(char **a, int n) {\n int i;\n EACH(i, n) {\n  free(a[i]);\n }\n}\n"
+    assert dfree(graph(tmp_path, src)) == []  # i is assigned at every iteration
+
+
+SITES = 60  # the one use after the call that the tests plant must stay under the 2% floor of the after-use rate
+# What the code itself proves: pool_release and buf_release free their parameter (so the word `release` names a deallocator, seen in two of
+# them), and eight other functions free nothing (so the word is not one every name has).
+PROVEN = ("static void pool_release(char *x) {\n free(x);\n}\nstatic void buf_release(char *x) {\n free(x);\n}\n"
+          + "".join(f"static void other{i}(char *x) {{\n puts(x);\n}}\n" for i in range(8)))
+PROVEN_LINES = 30
+
+
+def _sites(call, acquired=True):
+    """SITES functions that each get a buffer from a call (or take it as a parameter), use it and end with `call(p)`."""
+    if acquired:
+        return "".join(f"void g{i}(void) {{\n char *p = make_buf();\n p[0] = 1;\n {call}(p);\n}}\n" for i in range(SITES))
+    return "".join(f"void g{i}(char *p) {{\n p[0] = 1;\n {call}(p);\n}}\n" for i in range(SITES))
+
+
+def test_release_function_with_no_body_is_learned_from_its_uses(tmp_path):
+    tail = "void f(void) {\n char *p = make_buf();\n lib_release(p);\n p[0] = 2;\n}\n"
+    conn = graph(tmp_path, PROVEN + _sites("lib_release") + tail)
+    base = PROVEN_LINES + 5 * SITES
+    assert uaf(conn) == [(base + 3, base + 4, "p")]
+    assert [tuple(r)[:2] for r in conn.execute("SELECT name, arg_index FROM inferred_release")] == [("lib_release", 0)]
+
+
+def test_a_name_the_code_never_showed_is_not_learned_as_a_release_function(tmp_path):
+    tail = "void f(void) {\n char *p = make_buf();\n lib_dump(p);\n p[0] = 2;\n}\n"
+    conn = graph(tmp_path, PROVEN + _sites("lib_dump") + tail)  # same usage as a release, but nothing says it is one
+    assert uaf(conn) == [] and list(conn.execute("SELECT * FROM inferred_release")) == []
+
+
+def test_a_last_use_of_a_parameter_is_not_a_release(tmp_path):
+    tail = "void f(char *p) {\n lib_release(p);\n p[0] = 2;\n}\n"
+    conn = graph(tmp_path, PROVEN + _sites("lib_release", acquired=False) + tail)
+    assert uaf(conn) == [] and list(conn.execute("SELECT * FROM inferred_release")) == []
+
+
+def test_function_whose_argument_is_used_afterwards_is_not_a_release_function(tmp_path):
+    body = "".join(f"void g{i}(void) {{\n char *p = make_buf();\n lib_release(p);\n p[0] = 1;\n}}\n" for i in range(SITES))
+    conn = graph(tmp_path, PROVEN + body)
+    assert list(conn.execute("SELECT * FROM inferred_release")) == []
+
+
+def test_few_sites_say_nothing(tmp_path):
+    body = "".join(f"void g{i}(void) {{\n char *p = make_buf();\n lib_release(p);\n}}\n" for i in range(3))
+    conn = graph(tmp_path, PROVEN + body + "void f(void) {\n char *p = make_buf();\n lib_release(p);\n p[0] = 2;\n}\n")
+    assert uaf(conn) == []
 
 
 def test_loop_that_runs_once_has_no_back_edge(tmp_path):
@@ -261,5 +345,28 @@ def test_if_else_directives_are_alternatives(tmp_path):
 def test_macro_that_does_not_release_is_not_expanded(tmp_path):
     src = "#define SHOW(x) printf(\"%s\", x)\nvoid f(char *p) {\n SHOW(p);\n p[0] = 1;\n free(p);\n}\n"
     assert uaf(graph(tmp_path, src)) == [] and dfree(graph(tmp_path, src)) == []
+
+
+USE_AFTER_DEAD_END = "void f(char *p, int c) {\n if (c) {\n  free(p);\n  stop(\"x\");\n }\n p[0] = 1;\n}\n"
+
+
+def test_function_declared_noreturn_by_the_language_ends_the_path(tmp_path):
+    src = "_Noreturn void stop(const char *m);\n" + USE_AFTER_DEAD_END
+    assert uaf(graph(tmp_path, src)) == []
+    src = "void stop(const char *m) __attribute__((noreturn));\n" + USE_AFTER_DEAD_END
+    assert uaf(graph(tmp_path, src)) == []
+    # the same function with no declaration saying it never returns: nothing ends the path
+    assert uaf(graph(tmp_path, USE_AFTER_DEAD_END)) == [(3, 6, "p")]
+
+
+def test_noreturn_declared_through_a_macro_whose_body_is_the_attribute(tmp_path):
+    src = "#define NORETURN __attribute__((__noreturn__))\nNORETURN void stop(const char *m);\n" + USE_AFTER_DEAD_END
+    assert uaf(graph(tmp_path, src)) == []
+
+
+def test_macro_that_calls_a_noreturn_function_never_returns(tmp_path):
+    src = ("_Noreturn void bug_at(const char *file, int line, const char *m);\n"
+           "#define STOP(m) bug_at(\"f.c\", 1, m)\n" + USE_AFTER_DEAD_END.replace("stop(", "STOP("))
+    assert uaf(graph(tmp_path, src)) == []
 
 
