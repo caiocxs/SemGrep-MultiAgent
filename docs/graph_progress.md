@@ -42,6 +42,25 @@ project. A different project is the only clean test of whether 0.014 / 0.063 ale
   the method: above 0.1 there, which would mean the conventions are Git-specific. Either is reported as it comes out, and if the extractor is
   changed afterwards for curl, the curl numbers are no longer a held-out test and the entry says so.
 
+## Protocol for two untouched projects (written on 2026-10-12 **before** the run)
+
+The curl test taught two things: a held-out result is worthless when the extractor is blind to the project's release names, and once the
+extractor is changed after seeing a project, that project is a development set. So the check is repeated on projects the extractor has
+not seen, and the coverage diagnostic is part of the criterion.
+
+- **Projects:** OpenSSL (`openssl/openssl`) and Redis (`redis/redis`), blobless clones next to the repository, at their head, all `.c`
+  files, headers read for their `#define`s. Chosen because their release conventions differ from Git and curl (`OPENSSL_free`,
+  `zfree`...).
+- **No change to the extractor, the query or the name lists before the numbers are written down here, and none afterwards that would be
+  presented as a held-out result.** If something is changed, those projects become development sets and the entry says so.
+- **Measured once per project:** `free` events per KLOC (coverage) and the textual release-like names with the most uses; use after
+  free and double free alerts per KLOC, on all files and on the train and test sides of the same split by file hash (seed 0).
+- **Valid only with coverage:** a project whose `free` events are below 3 per KLOC (curl before the macros: 0.5, Git: 10.0) is reported as
+  **blind**, not as passed, whatever the alert rate. The extractor is then not changed in the same step: the unknown names are listed, and a
+  later change makes the project a development set.
+- **Success on a project:** coverage at or above 3 events per KLOC and use after free at most 0.1 alerts/KLOC on all files. All alerts of the
+  use-after-free query are read afterwards (a sample of 30 in sorted order of file and line for double free).
+
 ## Where the arm stands (2026-10-11)
 
 | Question | Status |
