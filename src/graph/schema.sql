@@ -20,13 +20,15 @@ CREATE TABLE IF NOT EXISTS functions (
 --       use    the variable is dereferenced, passed on or compared
 --       reset  the variable gets a new value that is not an allocation (NULL, another pointer, loop step)
 --       call   an argument of a call, until the callee is resolved (see call_args); afterwards free, use or join
+--       escape the pointer is copied into something else (`return p`, `x = p`, `s->f = p`, `*out = p`): it is held elsewhere now
+--       null   the pointer is known to be NULL on this branch (`if (!p)`, `p == NULL`, the else of `if (p)`)
 --       join   no effect: a merge point of the flow (loop heads, labels, cases) or a call that touches nothing
 -- var is the access path as text ("p", "ctx->buf"); it is scoped by function.
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY,
     func_id INTEGER NOT NULL REFERENCES functions(id),
     line    INTEGER NOT NULL,
-    kind    TEXT NOT NULL CHECK (kind IN ('alloc', 'free', 'use', 'reset', 'call', 'join')),
+    kind    TEXT NOT NULL CHECK (kind IN ('alloc', 'free', 'use', 'reset', 'call', 'join', 'escape', 'null')),
     var     TEXT,
     detail  TEXT                      -- the source text of the statement, shown to the judge
 );
@@ -93,5 +95,38 @@ CREATE TABLE IF NOT EXISTS inferred_release (
     rate      REAL NOT NULL,      -- share of the sites followed by a use of the argument
     acquired  REAL NOT NULL,      -- share of the sites where the argument was assigned from a call before
     score     REAL NOT NULL,      -- log-odds of the words of the name, learned from the functions proven to free their parameter
+    PRIMARY KEY (name, arg_index)
+);
+
+-- Memory leaks (CWE-401). Every assignment or initializer from a call: the callee's name and whether the variable is local to the function.
+CREATE TABLE IF NOT EXISTS allocs (
+    event_id INTEGER PRIMARY KEY REFERENCES events(id),
+    callee   TEXT NOT NULL,
+    local    INTEGER NOT NULL
+);
+
+-- What a function returns: the escape event of `return p` (NULL for `return f(..)`) and the callee of `return f(..)` (NULL otherwise).
+CREATE TABLE IF NOT EXISTS returns (
+    func_id  INTEGER NOT NULL REFERENCES functions(id),
+    event_id INTEGER,
+    callee   TEXT
+);
+
+-- Names that return a fresh allocation: the standard allocators and the functions the code proves to return one.
+CREATE TABLE IF NOT EXISTS leak_allocators (
+    name TEXT PRIMARY KEY
+);
+
+-- Call events that hand the pointer to someone who keeps it (a callee that stores, returns or frees it, or an unknown one that is not a reader).
+CREATE TABLE IF NOT EXISTS handoff (
+    call_event INTEGER PRIMARY KEY REFERENCES events(id)
+);
+
+-- Functions with no body that only read their argument, learned from how often the caller frees the pointer afterwards.
+CREATE TABLE IF NOT EXISTS leak_readers (
+    name      TEXT NOT NULL,
+    arg_index INTEGER NOT NULL,
+    sites     INTEGER NOT NULL,
+    rate      REAL NOT NULL,
     PRIMARY KEY (name, arg_index)
 );

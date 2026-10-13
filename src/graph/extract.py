@@ -37,6 +37,10 @@ A summary says a function frees its parameter only if the free lies on every pat
 on an error path and returns a code is not a deallocator for its caller); a path that ends in `exit`/`die` is not a return.
 `#if`/`#else` branches are alternatives, not statements in sequence.
 
+Constant conditions are folded: a literal, a comparison of constants, a macro with an integer value, a file-level variable with a literal
+initializer that is `const` or never assigned, and a function with no parameters that only returns a literal. An `if` on a constant keeps
+only the branch that runs.
+
 Known limits (the graph is path-insensitive and intraprocedural except for the call summaries): conditions are not evaluated
 (both sides of a branch are feasible), `&p` passed to a function and aliases (`q = p`) are not followed, a summary says "frees
 its parameter somewhere", not "on every path", and macros are seen as the calls they look like.
@@ -56,7 +60,7 @@ from src.graph import paths
 # The C standard library is the only thing given. Every other release function, wrapper macro, allocator macro, noreturn function
 # and loop macro is found from the code being analyzed (see the module docstring), not listed here.
 FREE_FUNCTIONS = {"free"}
-ALLOC_FUNCTIONS = {"malloc", "calloc", "realloc", "strdup", "strndup"}
+ALLOC_FUNCTIONS = {"malloc", "calloc", "realloc", "strdup", "strndup", "wcsdup"}
 NORETURN_FUNCTIONS = {"exit", "_exit", "_Exit", "abort", "quick_exit", "longjmp", "thrd_exit"}
 ALWAYS_TRUE = {"1", "true", "TRUE"}
 NEVER_TRUE = {"0", "false", "FALSE"}
@@ -77,6 +81,9 @@ MAX_MACRO_DEPTH = 4
 BIG_RECURSION = 60000        # recursion limit while a file is walked (nested expressions of generated code)
 BIG_STACK = 256 * 1024 * 1024  # stack of the thread that walks it (smaller sizes are tried if the system refuses it)
 ENTRY, RETURN, END, NORETURN = "<entry>", "<return>", "<end>", "<noreturn>"  # details of the marker events of a function
+SCOPE_END = "<scope-end>"  # detail of the reset that marks a variable going out of scope (a pointer still holding an allocation leaks there)
+REALLOC_SELF = "<realloc-self>"  # detail of `p = realloc(p, n)`: the old block is lost if the call fails
+MIN_READER_RATE = 0.25   # a function with no body is a reader if the caller frees the pointer afterwards in at least this share of its sites
 _SUBST = []  # stack of {macro parameter: argument path or None} while a macro body is being walked
 
 _PARSER = Parser(Language(tree_sitter_c.language()))
@@ -142,6 +149,7 @@ class _Function:
     def __init__(self, extractor, func_id, source_lines, params=()):
         self.x = extractor
         self.params = set(params)
+        self.locals = set(params)  # the names that belong to this function: parameters and declared variables
         self.macro_depth = 0
         self.call_row = None     # while a macro body is walked, the line of the call, for the events it makes
         self.copy_of = {}        # local -> parameter it is a copy of (q = (T *)param)
@@ -260,6 +268,43 @@ class _Function:
         value = _strip(value)
         return value is not None and value.type == "call_expression"
 
+    def _callee(self, value):
+        """The name of the function a call expression calls (macro aliases followed), or None."""
+        value = _strip(value)
+        if value is None or value.type != "call_expression":
+            return None
+        name = _called_name(value)
+        for _ in range(MAX_MACRO_DEPTH):
+            alias = self.x.aliases.get(name)
+            if alias is None:
+                break
+            name = alias
+        return name
+
+    def _realloc_first(self, value):
+        """The path of the pointer given to `realloc(p, n)` when the value is that call, else None."""
+        value = _strip(value)
+        if value is None or value.type != "call_expression" or self._callee(value) != "realloc":
+            return None
+        arguments = value.child_by_field_name("arguments")
+        args = arguments.named_children if arguments is not None else []
+        return path_of(args[0]) if args else None
+
+    def _acquire(self, eid, value, var):
+        """Notes that `var` was given what a call returned (`p = f(..)`): the leak query follows it if f turns out to allocate."""
+        callee = self._callee(value)
+        if callee and var and not _BASE.search(var):
+            self.x.allocs.append((eid, callee, 1 if var in self.locals else 0))
+
+    def _escapes(self, value, target):
+        """A pointer copied into something else is held there now: `x = p`, `s->f = p`, and the old block of `q = realloc(p, n)`."""
+        copied = path_of(value)
+        if copied and copied != target:
+            self.event("escape", copied, value)
+        moved = self._realloc_first(value)
+        if moved and moved != target:
+            self.event("escape", moved, value)
+
     def assign(self, n):
         left, right = n.child_by_field_name("left"), n.child_by_field_name("right")
         self.expr(right)
@@ -270,8 +315,11 @@ class _Function:
             if owner:  # `*param = ..`: whoever passed &p gets a new value in p
                 self.x.deref_effects.append((self.func_id, owner, "reset"))
         path = path_of(left)
+        self._escapes(right, path)
         if path:
-            self.event("alloc" if self._allocates(right) else "reset", path, n)
+            same = self._realloc_first(right) == path
+            eid = self.event("alloc" if self._allocates(right) else "reset", path, n, detail=REALLOC_SELF if same else None)
+            self._acquire(eid, right, path)
             if left.type == "identifier":
                 self.track(path, right)
 
@@ -419,7 +467,7 @@ class _Function:
             self.stmt(child)
             i += 1
         for name in self.scopes.pop():  # the block ends: those names are gone (a later same name is another variable)
-            self.event("reset", name, n)
+            self.event("reset", name, n, detail=SCOPE_END)
 
     def s_expression_statement(self, n):
         for child in n.named_children:
@@ -427,25 +475,109 @@ class _Function:
 
     def s_declaration(self, n):
         for declarator in n.children_by_field_name("declarator"):
+            value = None
             if declarator.type == "init_declarator":
                 value = declarator.child_by_field_name("value")
                 self.expr(value)
                 name = _identifier_of(declarator.child_by_field_name("declarator"))
                 kind = "alloc" if self._allocates(value) else "reset"
+                self._escapes(value, name)
             else:
                 name, kind = _identifier_of(declarator), "reset"  # a new variable starts without a value
             if name:
-                self.event(kind, name, declarator)
-                self.track(name, value if declarator.type == "init_declarator" else None)
+                self.locals.add(name)
+                eid = self.event(kind, name, declarator)
+                if value is not None:
+                    self._acquire(eid, value, name)
+                self.track(name, value)
                 if self.scopes:
                     self.scopes[-1].append(name)
 
+    def _constant(self, node):
+        """The integer a condition always evaluates to (see the module docstring), or None."""
+        node = _strip(node)
+        if node is None:
+            return None
+        t = node.type
+        if t == "number_literal":
+            try:
+                return int(re.sub(r"[uUlL]+$", "", _text(node)), 0)
+            except ValueError:
+                return None
+        if t in ("true", "false"):
+            return int(t == "true")
+        if t == "identifier":
+            return self.x.constants.get(_text(node))
+        if t == "call_expression":
+            arguments = node.child_by_field_name("arguments")
+            if arguments is not None and not arguments.named_children:
+                return self.x.constants.get(_called_name(node) or "")
+            return None
+        if t == "unary_expression" and node.named_children:
+            value = self._constant(node.named_children[0])
+            operator = node.children[0].type
+            if value is None:
+                return None
+            return {"!": int(not value), "-": -value, "+": value, "~": ~value}.get(operator)
+        if t == "binary_expression":
+            left, right = self._constant(node.child_by_field_name("left")), self._constant(node.child_by_field_name("right"))
+            operator = node.child_by_field_name("operator")
+            if left is None or right is None or operator is None:
+                return None
+            ops = {"==": lambda a, b: int(a == b), "!=": lambda a, b: int(a != b), "<": lambda a, b: int(a < b),
+                   ">": lambda a, b: int(a > b), "<=": lambda a, b: int(a <= b), ">=": lambda a, b: int(a >= b),
+                   "&&": lambda a, b: int(bool(a) and bool(b)), "||": lambda a, b: int(bool(a) or bool(b)),
+                   "+": lambda a, b: a + b, "-": lambda a, b: a - b, "*": lambda a, b: a * b}
+            fn = ops.get(_text(operator))
+            return fn(left, right) if fn else None
+        return None
+
+    @staticmethod
+    def _null_test(condition):
+        """(path, null when true) if the condition tests one pointer against NULL (`!p`, `p == NULL`, `p != 0`, `p`), else None."""
+        def target(node):
+            node = _strip(node)
+            if node is not None and node.type == "assignment_expression":  # `(p = malloc(n)) == NULL`
+                return path_of(node.child_by_field_name("left"))
+            return path_of(node)
+
+        cond = _strip(condition)
+        if cond is None:
+            return None
+        if cond.type == "unary_expression" and cond.children and cond.children[0].type == "!":
+            path = target(cond.named_children[0]) if cond.named_children else None
+            return (path, True) if path else None
+        if cond.type == "binary_expression":
+            operator = cond.child_by_field_name("operator")
+            left, right = cond.child_by_field_name("left"), cond.child_by_field_name("right")
+            if operator is None or _text(operator) not in ("==", "!="):
+                return None
+            for tested, other in ((left, right), (right, left)):
+                if other is not None and _text(other) in ("NULL", "0", "nullptr"):
+                    path = target(tested)
+                    return (path, _text(operator) == "==") if path else None
+            return None
+        path = target(cond)
+        return (path, False) if path else None
+
     def s_if_statement(self, n):
-        self.expr(n.child_by_field_name("condition"))
+        condition = n.child_by_field_name("condition")
+        self.expr(condition)
+        value = self._constant(condition)
+        if value is not None:  # only one branch can run
+            branch = n.child_by_field_name("consequence") if value else n.child_by_field_name("alternative")
+            if branch is not None:
+                self.stmt(branch)
+            return
+        test = self._null_test(condition)
         entry = set(self.frontier)
+        if test and test[1]:  # the consequence runs with the pointer NULL
+            self.event("null", test[0], condition)
         self.stmt(n.child_by_field_name("consequence"))
         after_then = set(self.frontier)
         self.frontier = entry
+        if test and not test[1]:  # the other side, also when there is no else, runs with the pointer NULL
+            self.event("null", test[0], condition)
         alternative = n.child_by_field_name("alternative")
         if alternative is not None:
             self.stmt(alternative)
@@ -531,24 +663,47 @@ class _Function:
                 self.x.flow.append((src, head))
         self.frontier = (set(self.frontier) if self._exit_when(condition) else set()) | ctx["breaks"]
 
+    def _entry_case(self, body, selector):
+        """Index of the case that runs when the switch is on a constant: the matching one, else `default`, else None."""
+        default = None
+        for index, child in enumerate(body.named_children):
+            if child.type != "case_statement":
+                continue
+            if child.children and child.children[0].type == "default":
+                default = index
+                continue
+            value = child.child_by_field_name("value")
+            if value is not None and self._constant(value) == selector:
+                return index
+        return default
+
     def s_switch_statement(self, n):
-        self.expr(n.child_by_field_name("condition"))
+        condition = n.child_by_field_name("condition")
+        self.expr(condition)
         entry = set(self.frontier)
         body = n.child_by_field_name("body")
         has_default = any(c.type == "case_statement" and c.children and c.children[0].type == "default"
                           for c in (body.named_children if body is not None else []))
-        self.switch_entry.append(entry)
+        selector = self._constant(condition)
+        start = self._entry_case(body, selector) if selector is not None and body is not None else None
+        constant = selector is not None and body is not None
+        self.switch_entry.append(set() if constant else entry)
         self.loops.append({"breaks": set(), "continues": set(), "depth": len(self.scopes)})
         self.frontier = set()  # nothing falls into the first case except through its label
         if body is not None:
-            for child in body.named_children:
+            for index, child in enumerate(body.named_children):
+                if constant:  # a switch on a constant runs the one case it selects, and what falls through from it
+                    if start is None or index < start:
+                        continue
+                    if index == start:
+                        self.frontier = set(entry)
                 self.stmt(child)
         ctx = self.loops.pop()
         self.switch_entry.pop()
         outer = self.loops[-1] if self.loops else None
         if outer is not None:  # `continue` inside a switch belongs to the enclosing loop
             outer["continues"] |= ctx["continues"]
-        self.frontier = set(self.frontier) | ctx["breaks"] | (set() if has_default else entry)
+        self.frontier = set(self.frontier) | ctx["breaks"] | (set() if has_default or constant and start is not None else entry)
 
     def s_case_statement(self, n):
         entry = self.switch_entry[-1] if self.switch_entry else set()
@@ -562,7 +717,7 @@ class _Function:
         """break/continue skip the end of the blocks they leave: the names declared there are gone as well."""
         for names in self.scopes[self.loops[-1]["depth"]:]:
             for name in names:
-                self.event("reset", name, node)
+                self.event("reset", name, node, detail=SCOPE_END)
 
     def s_break_statement(self, n):
         if self.loops:
@@ -580,6 +735,9 @@ class _Function:
         for child in n.named_children:
             self.expr(child)
             self.use(path_of(child), child)
+            held = path_of(child)
+            escaped = self.event("escape", held, child) if held else None
+            self.x.returns.append((self.func_id, escaped, self._callee(child)))
         self.event("join", None, n, detail=RETURN)  # the path leaves the function here, even if it made no event before
         self.frontier = set()
 
@@ -611,10 +769,12 @@ class Extractor:
     def __init__(self, conn):
         self.conn = conn
         self.events, self.flow, self.call_args, self.deref_effects = [], [], [], []
+        self.allocs, self.returns = [], []
         self.aliases = {}           # name -> name it stands for (`#define my_free free`)
         self.fn_macros = {}         # name -> (parameters, body) of a function-like macro that is expanded at its calls
         self.loop_macros = set()    # names of macros that are loops
         self.noreturn = set(NORETURN_FUNCTIONS)  # the standard library's, plus what the code declares noreturn
+        self.constants = {}         # name of a variable, macro or parameterless function -> the integer it always is
         self._next = (conn.execute("SELECT COALESCE(MAX(id), 0) FROM events").fetchone()[0]) + 1
 
     def next_id(self):
@@ -633,7 +793,10 @@ class Extractor:
         c.executemany("INSERT OR IGNORE INTO call_args (call_event, callee_name, arg_index, var, addr) VALUES (?, ?, ?, ?, ?)",
                       self.call_args)
         c.executemany("INSERT INTO deref_effects VALUES (?, ?, ?)", self.deref_effects)
+        c.executemany("INSERT OR IGNORE INTO allocs VALUES (?, ?, ?)", self.allocs)
+        c.executemany("INSERT INTO returns VALUES (?, ?, ?)", self.returns)
         self.events, self.flow, self.call_args, self.deref_effects = [], [], [], []
+        self.allocs, self.returns = [], []
 
 
 def _functions(root):
@@ -919,6 +1082,105 @@ def infer_releases(conn):
     return found
 
 
+def _reaches_free(out, kind, var_of, start, var):
+    """True if `var` is freed on some path after `start` before it is given a new value; None if the walk is too long."""
+    seen, stack, steps = set(), list(out.get(start, ())), 0
+    while stack:
+        node = stack.pop()
+        if node in seen:
+            continue
+        seen.add(node)
+        steps += 1
+        if steps > MAX_STEPS:
+            return None
+        other = var_of[node]
+        if other is not None:
+            if kind[node] == "free" and (other == var or other.startswith((var + "->", var + ".", var + "["))):
+                return True
+            if kind[node] in ("reset", "alloc") and other == var:
+                continue
+        stack.extend(out.get(node, ()))
+    return False
+
+
+def prepare_leaks(conn):
+    """
+    What the leak query (`paths.memory_leak`) needs, found from the code like the rest: the functions that return a fresh allocation (a
+    body that returns the result of an allocator, to a fixed point), the callees that keep a pointer handed to them (a body that stores,
+    returns, frees or passes it on to something that keeps it, to a fixed point), and, for functions with no body, the readers: names whose
+    callers free the pointer afterwards in at least MIN_READER_RATE of at least MIN_SITES sites, which do not take ownership.
+    """
+    name_of = dict(conn.execute("SELECT id, name FROM functions"))
+    var_of, kind, func_of = {}, {}, {}
+    for event_id, k, var, func_id in conn.execute("SELECT id, kind, var, func_id FROM events"):
+        kind[event_id], var_of[event_id], func_of[event_id] = k, var, func_id
+    # allocators
+    allocators = set(ALLOC_FUNCTIONS)
+    allocated = {}
+    for callee, var, func_id in conn.execute("SELECT a.callee, e.var, e.func_id FROM allocs a JOIN events e ON e.id = a.event_id"):
+        allocated.setdefault((func_id, var), set()).add(callee)
+    returns = conn.execute("SELECT func_id, event_id, callee FROM returns").fetchall()
+    for _ in range(MAX_SUMMARY_ROUNDS):
+        grown = set()
+        for func_id, event_id, callee in returns:
+            if name_of[func_id] in allocators:
+                continue
+            if callee in allocators or (event_id is not None and allocated.get((func_id, var_of[event_id]), set()) & allocators):
+                grown.add(name_of[func_id])
+        if not grown:
+            break
+        allocators |= grown
+    conn.execute("DELETE FROM leak_allocators")
+    conn.executemany("INSERT INTO leak_allocators VALUES (?)", [(n,) for n in sorted(allocators)])
+    # who keeps what is handed to it
+    out = {}
+    for src, dst in conn.execute("SELECT src, dst FROM flow"):
+        out.setdefault(src, []).append(dst)
+    params = _params_of(conn)
+    calls = conn.execute("SELECT ca.call_event, ca.callee_name, ca.callee_id, ca.arg_index, ca.var, ca.addr, e.func_id "
+                         "FROM call_args ca JOIN events e ON e.id = ca.call_event").fetchall()
+    unresolved = {}
+    for event_id, name, callee, index, var, addr, func_id in calls:
+        if callee is None and not addr:
+            unresolved.setdefault((name, index), []).append((event_id, var))
+    readers = {}
+    for key, items in unresolved.items():
+        if len(items) < MIN_SITES:
+            continue
+        step = max(1, len(items) // MAX_SITES)
+        freed = total = 0
+        for event_id, var in items[::step]:
+            after = _reaches_free(out, kind, var_of, event_id, var)
+            if after is not None:
+                total += 1
+                freed += bool(after)
+        if total >= MIN_SITES and freed / total >= MIN_READER_RATE:
+            readers[key] = (len(items), freed / total)
+    keeps = set()  # (func_id, param index) that the function stores, returns, frees or passes on to something that keeps it
+    for event_id, k in kind.items():
+        var = var_of[event_id]
+        if k in ("escape", "free") and var is not None and var in params.get(func_of[event_id], {}):
+            keeps.add((func_of[event_id], params[func_of[event_id]][var]))
+    hand = set()
+    for _ in range(MAX_SUMMARY_ROUNDS):
+        hand = set()
+        for event_id, name, callee, index, var, addr, func_id in calls:
+            if addr or (callee is not None and (callee, index) in keeps) or (callee is None and (name, index) not in readers):
+                hand.add(event_id)
+        grown = set(keeps)
+        for event_id, name, callee, index, var, addr, func_id in calls:
+            if event_id in hand and not addr and var in params.get(func_id, {}):
+                grown.add((func_id, params[func_id][var]))
+        if grown == keeps:
+            break
+        keeps = grown
+    conn.execute("DELETE FROM handoff")
+    conn.executemany("INSERT INTO handoff VALUES (?)", [(e,) for e in sorted(hand)])
+    conn.execute("DELETE FROM leak_readers")
+    conn.executemany("INSERT INTO leak_readers VALUES (?, ?, ?, ?)", [(n, i, c, r) for (n, i), (c, r) in sorted(readers.items())])
+    conn.commit()
+
+
 def resolve_calls(conn, infer=True):
     """Binds call arguments to callees, cuts the flow after functions that never return, summarizes what functions do to their
     parameters and, with `infer`, learns the release functions that have no usable body (see the module docstring)."""
@@ -1161,6 +1423,46 @@ def declared_noreturn(files, definitions):
     return names
 
 
+_GLOBAL_VALUE = re.compile(r"^(static\s+)?(const\s+)?(?:unsigned\s+|signed\s+)?(?:int|long|short|char|bool|_Bool)\s+(\w+)\s*=\s*(-?\d+|true|false)\s*;", re.MULTILINE)
+_CONST_FUNCTION = re.compile(r"^(?:static\s+)?(?:int|long|bool|_Bool)\s+(\w+)\s*\(\s*(?:void)?\s*\)\s*\{\s*return\s+(-?\d+|true|false)\s*;\s*\}", re.MULTILINE)
+
+
+def collect_constants(files, definitions):
+    """{name: integer} of what is always the same: macros with an integer value, file-level variables with a literal initializer that are
+    `const` or never assigned anywhere, and parameterless functions that only return a literal."""
+    def number(text):
+        return int(text == "true") if text in ("true", "false") else int(text)
+
+    constants = {}
+    for name, defs in definitions.items():
+        values = {d[1] for d in defs if d[0] == "value" and re.fullmatch(r"\(?\s*-?\d+\s*\)?", d[1])}
+        if len(values) == 1 and not any(d[0] in ("alias", "fn") for d in defs):
+            constants[name] = int(re.sub(r"[()\s]", "", next(iter(values))))
+    texts = []
+    for f in files:
+        try:
+            texts.append(_COMMENT.sub(" ", Path(f).read_text(encoding="utf-8", errors="replace")))
+        except OSError:
+            continue
+    candidates = {}
+    for text in texts:
+        for m in _GLOBAL_VALUE.finditer(text):
+            candidates.setdefault(m.group(3), []).append((bool(m.group(2)), number(m.group(4))))
+        for m in _CONST_FUNCTION.finditer(text):
+            candidates.setdefault(m.group(1) + "()", []).append((True, number(m.group(2))))
+    joined = "\n".join(texts)
+    for name, found in candidates.items():
+        values = {v for _, v in found}
+        if len(values) != 1:
+            continue  # defined with different values in different places (static copies that disagree): say nothing
+        const, value = found[0]
+        if name.endswith("()"):
+            constants[name[:-2]] = value
+        elif const or len(re.findall(r"\b" + re.escape(name) + r"\s*(?:[-+*/%&|^]|<<|>>)?=(?!=)", joined)) <= len(found):
+            constants[name] = value  # no assignment but its own initializers
+    return constants
+
+
 def build(files, db=":memory:", headers=()):
     """
     Extracts every file into one graph and resolves the calls. Files that fail to parse are skipped and returned. `headers` are
@@ -1172,16 +1474,19 @@ def build(files, db=":memory:", headers=()):
     definitions = collect_macros(sources)
     extractor.aliases, extractor.fn_macros, extractor.loop_macros = macro_table(definitions)
     extractor.noreturn |= declared_noreturn(sources, definitions)
+    extractor.constants = collect_constants(sources, definitions)
     failed = []
 
     def work():
         for f in files:
-            sizes = (len(extractor.events), len(extractor.flow), len(extractor.call_args), len(extractor.deref_effects))
+            sizes = (len(extractor.events), len(extractor.flow), len(extractor.call_args), len(extractor.deref_effects),
+                     len(extractor.allocs), len(extractor.returns))
             try:
                 extract_file(conn, f, extractor)
             except (OSError, ValueError, RecursionError) as error:
                 # drop what this file added, so that half a function never reaches the graph
-                for items, size in zip((extractor.events, extractor.flow, extractor.call_args, extractor.deref_effects), sizes):
+                for items, size in zip((extractor.events, extractor.flow, extractor.call_args, extractor.deref_effects,
+                                        extractor.allocs, extractor.returns), sizes):
                     del items[size:]
                 row = conn.execute("SELECT id FROM files WHERE path = ?", (str(f),)).fetchone()
                 if row is not None:

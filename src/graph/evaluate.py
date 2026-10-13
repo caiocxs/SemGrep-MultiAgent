@@ -8,6 +8,7 @@ on real-world code assumed correct.
 """
 
 import argparse
+import re
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -54,17 +55,25 @@ def main():
     parser.add_argument("--bad", nargs="+", required=True)
     parser.add_argument("--good", nargs="*", default=[])
     parser.add_argument("--filter", default="*")
-    parser.add_argument("--query", choices=("use_after_free", "double_free"), default="use_after_free")
+    parser.add_argument("--query", choices=("use_after_free", "double_free", "memory_leak"), default="use_after_free")
     parser.add_argument("--negatives", default=None, help="Real-world code assumed correct (e.g. ../git)")
     parser.add_argument("--show-missed", action="store_true")
+    parser.add_argument("--exclude", default=None, help="Regex on file names to leave out (e.g. the C++ cases of Juliet)")
     parser.add_argument("--seed", type=int, default=0, help="Seed of the train/test split of the real-world files")
     parser.add_argument("--show", type=int, default=10, help="Alerts to print")
     parser.add_argument("--show-test-alerts", action="store_true", help="Also print alerts of the test files (final reading only)")
     args = parser.parse_args()
 
     bad, good = collect_files(args.bad, args.filter), collect_files(args.good, args.filter)
+    if args.exclude:
+        left_out = [f for f in bad + good if re.search(args.exclude, f.name)]
+        bad = [f for f in bad if not re.search(args.exclude, f.name)]
+        good = [f for f in good if not re.search(args.exclude, f.name)]
+        print(f"left out {len(left_out)} files matching /{args.exclude}/")
     start = time.time()
     conn, failed = extract.build(bad + good)
+    if args.query == "memory_leak":
+        extract.prepare_leaks(conn)
     events = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     print(f"Juliet: {len(bad)} BAD / {len(good)} GOOD files, {events} events, extracted in {time.time() - start:.1f}s"
           + (f", {len(failed)} failed" if failed else ""))
@@ -83,6 +92,10 @@ def main():
         files = collect_files([args.negatives])
         start = time.time()
         real, failed = extract.build(files, headers=sorted(Path(args.negatives).rglob("*.h")))
+        if args.query == "memory_leak":
+            extract.prepare_leaks(real)
+            sites = real.execute("SELECT COUNT(*) FROM allocs a WHERE a.local = 1 AND a.callee IN (SELECT name FROM leak_allocators)").fetchone()[0]
+            print(f"allocation sites followed: {sites} ({sites / (_kloc(files) or 1):.1f} per KLOC)")
         print(f"\nReal-world: {len(files)} files, {_kloc(files):.0f} KLOC, "
               f"{real.execute('SELECT COUNT(*) FROM events').fetchone()[0]} events, extracted in {time.time() - start:.1f}s")
         start = time.time()

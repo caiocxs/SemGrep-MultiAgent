@@ -59,3 +59,65 @@ def use_after_free(conn):
 def double_free(conn):
     """Frees of a variable reachable from an earlier free of it with no reassignment in between."""
     return [dict(row) for row in conn.execute(_CANDIDATES.format(kinds="'free'"))]
+
+
+RETURN, END, REALLOC_SELF, SCOPE_END = "<return>", "<end>", "<realloc-self>", "<scope-end>"  # details the extractor gives to the markers it needs here
+
+
+def memory_leak(conn):
+    """
+    Allocations of a local variable that can reach a return, or the end of the function, on some path along which the variable is not
+    freed, not handed on (stored, returned, passed to something that keeps it) and not overwritten (needs `extract.prepare_leaks`).
+    `p = realloc(p, n)` keeps the old block alive on the path where p becomes NULL, the classic leak when realloc fails.
+    One row per allocation, with the first return it reaches.
+    """
+    out, kind, var_of, line_of, detail_of, func_of = {}, {}, {}, {}, {}, {}
+    for src, dst in conn.execute("SELECT src, dst FROM flow"):
+        out.setdefault(src, []).append(dst)
+    for event_id, k, var, line, detail, func_id in conn.execute("SELECT id, kind, var, line, detail, func_id FROM events"):
+        kind[event_id], var_of[event_id], line_of[event_id], detail_of[event_id], func_of[event_id] = k, var, line, detail, func_id
+    handoff = {r[0] for r in conn.execute("SELECT call_event FROM handoff")}
+    calls = {r[0] for r in conn.execute("SELECT call_event FROM call_args")}
+    sites = conn.execute(
+        "SELECT a.event_id, e.var, f.name, fi.path FROM allocs a JOIN events e ON e.id = a.event_id JOIN functions f ON f.id = e.func_id "
+        "JOIN files fi ON fi.id = f.file_id WHERE a.local = 1 AND a.callee IN (SELECT name FROM leak_allocators) ORDER BY fi.path, e.line").fetchall()
+    found = []
+    for alloc, var, function, path in sites:
+        seen, stack, hit = set(), [(alloc, 0)], None  # mode 0: held; 1: p = realloc(p, n) happened; 2: the old block is lost (p is NULL)
+        first = True
+        while stack and hit is None:
+            node, mode = stack.pop()
+            if (node, mode) in seen:
+                continue
+            seen.add((node, mode))
+            if not first:
+                d = detail_of[node]
+                if d in (RETURN, END):
+                    if mode in (0, 2):
+                        hit = node
+                    continue
+                if var_of[node] == var:
+                    k = kind[node]
+                    if k == "null":
+                        if mode == 0:
+                            continue          # the NULL branch: nothing was allocated
+                        mode = 2              # after a realloc: p is NULL, the old block is lost
+                    elif k in ("free", "escape") or (k != "null" and node in calls and node in handoff):
+                        if mode != 2:
+                            continue          # freed or held elsewhere
+                    elif k in ("reset", "alloc"):
+                        if d == SCOPE_END:
+                            if mode in (0, 2):
+                                hit = node        # the variable dies still holding the allocation
+                            continue
+                        if d == REALLOC_SELF and mode == 0:
+                            mode = 1
+                        elif mode != 2:
+                            continue          # overwritten with something else: not followed
+            first = False
+            for nxt in out.get(node, ()):
+                stack.append((nxt, mode))
+        if hit is not None:
+            found.append({"free_event": alloc, "free_line": line_of[alloc], "event": hit, "line": line_of[hit], "kind": "leak", "var": var,
+                          "function": function, "path": path, "detail": detail_of[alloc]})
+    return found
