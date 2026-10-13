@@ -287,3 +287,22 @@ seeds (0, 3, 4) stopped on the error of the quota and left no partial result in 
 - Prompts include code of the Juliet and Git sources; the free tiers may keep them.
 - Phi-4-mini and the 4B model differ in family and in size class, but the template was written for the strategy; the failure of Phi-4-mini
   is in the format of its answers, so a different prompt could change it.
+
+## 8. Other CWEs, hosted model, free-form rules (2026-10-13)
+
+Until now the rule synthesis was only measured in depth on CWE-416, with a rule template that carries the strategy of a use after free; on CWE-415 and
+CWE-476 it had one old run each with that template (0% recall). For the comparison with the graph arm on CWE-415 and CWE-401, the generator and the corrector were
+run once more on each, with **no strategy given** (the model writes the Semgrep YAML itself), the best model available (Groq `gpt-oss-120b`, combo G), the same
+gate (Juliet with a split by flow variant, plus the Git sources as real code, limit 0.1 alerts per KLOC), 6 fixes and seed 0. One run each, temperature 0.
+
+| CWE | Best attempt | Juliet held-out test | Real-world alerts (Git) | Accepted |
+|---|---|---|---|---|
+| 415, double free | 2 of 7 | recall 53.8%, precision 80.0%, 12 false positives | 41 alerts, **0.37 per KLOC** | no |
+| 401, memory leak | 0 of 7 | recall 79.5%, precision 36.4%, **420 false positives** | 3 alerts, 0.03 per KLOC | no |
+
+- **CWE-415:** the free-form rule is far better than the old template run (0% recall): it finds about half of the held-out cases at 80% precision, about the
+  recall the graph reaches (55.1%), but with 12 false positives in Juliet and 0.37 alerts per KLOC in Git, against 0 and 0.015 to 0.110 for the graph.
+- **CWE-401:** the best attempt is the first one and it matches an assignment from an allocator wherever it is, which is why its recall is 79.5% and its precision
+  36.4%. The later attempts failed on the Semgrep checker (`metavariable-pattern` and `focus-metavariable` at the top level of a rule) or repeated themselves. A rule
+  with no notion of "freed later" cannot tell a leak from a use. It is quiet on the Git sources (3 alerts); I did not check why, so that low rate is not read as a merit.
+- One run each, with a hosted model: indications, not a result with a spread.

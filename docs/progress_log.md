@@ -67,6 +67,13 @@ no false positives) and real-world C code (at most 0.1 alerts per KLOC), for CWE
 | 02:40 | **Error found in my own measurement**: a call that gave up on a 429 was returned as an empty answer and counted as a failed attempt of the model (all 35 attempts of one Gemini run, up to 15 of the OpenRouter ones) | The H and part of the I numbers measure the quota, not the model: H is declared not a comparison, I exploratory; `remote.py` now stops with an error in that case (tested). The Groq runs used for the claim had no such case | Correction of a result; section 7c of `ablation.md` |
 | 02:50 | Documents updated: section 7 of `ablation.md` rewritten with the final numbers, items 14 to 18 of `findings.md`, summaries exported to `results/crossval/` | - | - |
 
+## 2026-10-13: other CWEs, without the graph
+
+| Time | What | Result | Progress |
+|---|---|---|---|
+| 11:59 | CWE-401 (memory leak): generator and corrector (Groq 120B, free-form YAML, no strategy given), Juliet plus the Git gate, one run | Best attempt is the first: recall 79.5%, precision 36.4%, 420 Juliet false positives, 0.03 alerts/KLOC. Later attempts rejected by the Semgrep checker or repeated | No advance: a rule with no notion of "freed later" cannot tell a leak from a use |
+| 12:02 | CWE-415 (double free), same setup | Best attempt 2: recall 53.8%, precision 80.0%, 12 false positives, **0.37 alerts/KLOC** | Partial advance over the old 0% (that run used the use-after-free template); still 3.7 times the limit |
+
 ## Scorecard (as of 2026-10-10)
 
 | Question | Status |
