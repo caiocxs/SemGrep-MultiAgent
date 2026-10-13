@@ -1,7 +1,7 @@
 # Event-graph analyzer (design sketch)
 
 Status: on branch `feat/graph-analyzer`. The schema, the path queries, the tree-sitter extractor, the scoring against Juliet and real
-projects, and the fix-commit evaluation exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`, `tests/test_graph_leaks.py`, 83 tests); the LLM
+projects, and the fix-commit evaluation exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`, `tests/test_graph_leaks.py`, 92 tests); the LLM
 judge was decided against. The tables above the section "No hand-written names" were measured at earlier versions of the extractor (with
 hand-written lists); that section has the current numbers.
 
@@ -221,6 +221,31 @@ projects it can be measured on, one passes. It generalizes less well than use af
 analyzer learns less reliably: wrappers that hand the pointer to helpers, registries, ownership passed through fields. How it got there is in
 [graph_progress.md](graph_progress.md): a regression caught by the benchmark (derived paths taken for hand-offs), two blind projects fixed with learned allocators, and
 a reordering that traded coverage for precision.
+
+### CWE-401, second round: ownership (2026-10-13)
+
+The first held-out measure failed on tmux and PostgreSQL, so their alerts were read and the way ownership is decided was changed for causes that are patterns of C
+(macros that store or paste, `&p->f` and `return &p->f` giving a block away, chained assignments, a function returning memory it does not own, types that cannot hold
+a pointer, arena allocators). The details are in [graph_progress.md](graph_progress.md). Final numbers, total alerts per KLOC in all files, the same extractor for all:
+
+| Project (KLOC) | Allocation sites per KLOC | Alerts per KLOC (train / test) | Total | Role |
+|---|---|---|---|---|
+| tmux (109) | 6.2 | 0.035 / 0.045 | **0.037** | development (alerts read), passes |
+| curl (267) | 1.7 | 0.073 / 0.040 | **0.064** | development, passes |
+| OpenSSL (862) | 1.0 | 0.074 / 0.089 | **0.078** | development, passes |
+| Redis (320) | 1.8 | 0.084 / 0.073 | **0.081** | development, passes |
+| Git (400) | 2.9 | 0.115 / 0.072 | **0.103** | development, on the line |
+| PostgreSQL (1597) | 3.2 | 0.157 / 0.119 | **0.147** | development (alerts read), fails |
+| vim (572) | 1.1 | 0.029 / 0.024 | **0.028** | independent, passes |
+| **libuv (102)** | 1.7 | 0.055 / 0.138 | **0.078** | **never seen, frozen query, passes** |
+| **OpenSSH portable (157)** | 6.9 | 0.249 / 0.154 | **0.210** | **never seen, frozen query, fails** |
+| SQLite (440) | 0.8 | 0.074 / 0.031 | 0.061 | blind by the rule (below 1 site per KLOC) |
+| Lua (28) | 0.0 | 0 / 0 | 0 | blind: it allocates through a function pointer |
+
+Juliet CWE-401 stayed at 648 of 868 (74.7%) with 200 false positives (the flags defined in files that are not in the data). Reading: ownership is the hard part, and
+it moved a lot (tmux 0.321 to 0.037) but not everywhere. Two of three projects the query had never seen pass; six of the nine it can be measured on pass. About 5% of
+the allocation sites of real code are flagged even for `malloc` itself in PostgreSQL: that is the noise floor of a path-insensitive query that cannot tell an arena from an
+owner, an error path from a normal one, or a registration it cannot see.
 
 ## Does it find real bugs? The 16 fix commits of Git (`src/graph/fixcommits.py`)
 
