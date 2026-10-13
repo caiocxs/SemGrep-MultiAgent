@@ -96,7 +96,12 @@ def memory_leak(conn):
                     if mode in (0, 2):
                         hit = node
                     continue
-                if var_of[node] == var:
+                other = var_of[node]
+                # a call that receives `&p->f` or `p->f` and keeps it holds a pointer into the block: the block goes with it
+                derived = other is not None and node in handoff and other.startswith((var + "->", var + ".", var + "["))
+                if derived and mode != 2:
+                    continue
+                if other == var:
                     k = kind[node]
                     if k == "null":
                         if mode == 0:

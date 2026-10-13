@@ -83,6 +83,7 @@ BIG_STACK = 256 * 1024 * 1024  # stack of the thread that walks it (smaller size
 ENTRY, RETURN, END, NORETURN = "<entry>", "<return>", "<end>", "<noreturn>"  # details of the marker events of a function
 SCOPE_END = "<scope-end>"  # detail of the reset that marks a variable going out of scope (a pointer still holding an allocation leaks there)
 REALLOC_SELF = "<realloc-self>"  # detail of `p = realloc(p, n)`: the old block is lost if the call fails
+MIN_ALLOC_RATE = 0.25    # a learned allocator's result is freed afterwards in at least this share of its sites (and half of malloc's share)
 MIN_READER_RATE = 0.25   # a function with no body is a reader if the caller frees the pointer afterwards in at least this share of its sites
 _SUBST = []  # stack of {macro parameter: argument path or None} while a macro body is being walked
 
@@ -276,9 +277,14 @@ class _Function:
         name = _called_name(value)
         for _ in range(MAX_MACRO_DEPTH):
             alias = self.x.aliases.get(name)
-            if alias is None:
+            if alias is not None:
+                name = alias
+                continue
+            macro = self.x.fn_macros.get(name)  # `#define OPENSSL_malloc(n) CRYPTO_malloc(n, FILE, LINE)`: what it calls is what it is
+            wrapped = re.match(r"\s*\(?\s*(?:\([^()]*\)\s*)?([A-Za-z_]\w*)\s*\(", macro[1]) if macro else None
+            if wrapped is None or wrapped.group(1) == name:
                 break
-            name = alias
+            name = wrapped.group(1)
         return name
 
     def _realloc_first(self, value):
@@ -1095,7 +1101,9 @@ def _reaches_free(out, kind, var_of, start, var):
             return None
         other = var_of[node]
         if other is not None:
-            if kind[node] == "free" and (other == var or other.startswith((var + "->", var + ".", var + "["))):
+            # freeing the variable, something under it, or the block it points into (`free(data)` after `data[0]` was passed on)
+            if kind[node] == "free" and (other == var or other.startswith((var + "->", var + ".", var + "["))
+                                         or var.startswith((other + "->", other + ".", other + "["))):
                 return True
             if kind[node] in ("reset", "alloc") and other == var:
                 continue
@@ -1114,24 +1122,6 @@ def prepare_leaks(conn):
     var_of, kind, func_of = {}, {}, {}
     for event_id, k, var, func_id in conn.execute("SELECT id, kind, var, func_id FROM events"):
         kind[event_id], var_of[event_id], func_of[event_id] = k, var, func_id
-    # allocators
-    allocators = set(ALLOC_FUNCTIONS)
-    allocated = {}
-    for callee, var, func_id in conn.execute("SELECT a.callee, e.var, e.func_id FROM allocs a JOIN events e ON e.id = a.event_id"):
-        allocated.setdefault((func_id, var), set()).add(callee)
-    returns = conn.execute("SELECT func_id, event_id, callee FROM returns").fetchall()
-    for _ in range(MAX_SUMMARY_ROUNDS):
-        grown = set()
-        for func_id, event_id, callee in returns:
-            if name_of[func_id] in allocators:
-                continue
-            if callee in allocators or (event_id is not None and allocated.get((func_id, var_of[event_id]), set()) & allocators):
-                grown.add(name_of[func_id])
-        if not grown:
-            break
-        allocators |= grown
-    conn.execute("DELETE FROM leak_allocators")
-    conn.executemany("INSERT INTO leak_allocators VALUES (?)", [(n,) for n in sorted(allocators)])
     # who keeps what is handed to it
     out = {}
     for src, dst in conn.execute("SELECT src, dst FROM flow"):
@@ -1141,8 +1131,8 @@ def prepare_leaks(conn):
                          "FROM call_args ca JOIN events e ON e.id = ca.call_event").fetchall()
     unresolved = {}
     for event_id, name, callee, index, var, addr, func_id in calls:
-        if callee is None and not addr:
-            unresolved.setdefault((name, index), []).append((event_id, var))
+        if callee is None:
+            unresolved.setdefault((name, index, addr), []).append((event_id, var))
     readers = {}
     for key, items in unresolved.items():
         if len(items) < MIN_SITES:
@@ -1165,7 +1155,7 @@ def prepare_leaks(conn):
     for _ in range(MAX_SUMMARY_ROUNDS):
         hand = set()
         for event_id, name, callee, index, var, addr, func_id in calls:
-            if addr or (callee is not None and (callee, index) in keeps) or (callee is None and (name, index) not in readers):
+            if (callee is not None and (callee, index) in keeps) or (callee is None and (name, index, addr) not in readers):
                 hand.add(event_id)
         grown = set(keeps)
         for event_id, name, callee, index, var, addr, func_id in calls:
@@ -1174,10 +1164,78 @@ def prepare_leaks(conn):
         if grown == keeps:
             break
         keeps = grown
+    handed = {(func_of[e], _BASE.split(var_of[e], 1)[0]) for e in hand if var_of[e]}  # variables handed on inside each function
+    # allocators
+    allocators = set(ALLOC_FUNCTIONS)
+    allocated = {}
+    for callee, var, func_id in conn.execute("SELECT a.callee, e.var, e.func_id FROM allocs a JOIN events e ON e.id = a.event_id"):
+        allocated.setdefault((func_id, var), set()).add(callee)
+    returns = conn.execute("SELECT func_id, event_id, callee FROM returns").fetchall()
+    escapes = {}
+    for event_id, k in kind.items():
+        if k == "escape" and var_of[event_id] is not None:
+            escapes[(func_of[event_id], var_of[event_id])] = escapes.get((func_of[event_id], var_of[event_id]), 0) + 1
+    returned = {}
+    for func_id, event_id, callee in returns:
+        if event_id is not None:
+            returned[(func_id, var_of[event_id])] = returned.get((func_id, var_of[event_id]), 0) + 1
+    for _ in range(MAX_SUMMARY_ROUNDS):
+        grown = set()
+        for func_id, event_id, callee in returns:
+            if name_of[func_id] in allocators:
+                continue
+            # what it returns must be its own fresh allocation: a function that also stores the pointer somewhere, or hands it to a call that
+            # keeps it (a cache, a table, a registry), gives the caller something that is held elsewhere, like `getenv`, or a lookup
+            # that creates on first use
+            own = (event_id is not None and allocated.get((func_id, var_of[event_id]), set()) & allocators
+                   and escapes.get((func_id, var_of[event_id]), 0) == returned.get((func_id, var_of[event_id]), 0)
+                   and (func_id, var_of[event_id]) not in handed)
+            if callee in allocators or own:
+                grown.add(name_of[func_id])
+        if not grown:
+            break
+        allocators |= grown
+    # allocators with no body that proves them (a wrapper that also hands the pointer to a helper, a library): learned from the code. A name
+    # counts if it has at least MIN_SITES sites, its result is freed afterwards about as often as malloc's, and it carries the word of a
+    # standard allocator (`zmalloc`, `OPENSSL_malloc`, `xcalloc`), which is what separates it from a constructor that only looks like one.
+    seed_words = {w for name in ALLOC_FUNCTIONS for w in _words(name) | {name} if len(w) >= 4}
+    sites_of = {}
+    for event_id, callee, var in conn.execute("SELECT a.event_id, a.callee, e.var FROM allocs a JOIN events e ON e.id = a.event_id "
+                                              "WHERE a.local = 1"):
+        sites_of.setdefault(callee, []).append((event_id, var))
+
+    def freed_rate(items):
+        step = max(1, len(items) // MAX_SITES)
+        freed = total = 0
+        for event_id, var in items[::step]:
+            after = _reaches_free(out, kind, var_of, event_id, var)
+            if after is not None:
+                total += 1
+                freed += bool(after)
+        return (freed / total if total else None), total
+
+    seed_items = [item for name in ALLOC_FUNCTIONS for item in sites_of.get(name, [])]
+    seed_rate, _ = freed_rate(seed_items)
+    need = max(0.5 * (seed_rate or 0.0), MIN_ALLOC_RATE)
+    learned_allocs = {}
+    for callee, items in sites_of.items():
+        if callee in allocators or len(items) < MIN_SITES:
+            continue
+        if not any(callee == w or callee.lower().endswith(w) or callee.lower().startswith(w) or w in _words(callee) for w in seed_words):
+            continue
+        rate, total = freed_rate(items)
+        if rate is not None and total >= MIN_SITES and rate >= need:
+            learned_allocs[callee] = (len(items), rate)
+    allocators |= set(learned_allocs)
+    conn.execute("DELETE FROM learned_allocators")
+    conn.executemany("INSERT INTO learned_allocators VALUES (?, ?, ?)", [(n, c, r) for n, (c, r) in sorted(learned_allocs.items())])
+    conn.execute("DELETE FROM leak_allocators")
+    conn.executemany("INSERT INTO leak_allocators VALUES (?)", [(n,) for n in sorted(allocators)])
     conn.execute("DELETE FROM handoff")
     conn.executemany("INSERT INTO handoff VALUES (?)", [(e,) for e in sorted(hand)])
     conn.execute("DELETE FROM leak_readers")
-    conn.executemany("INSERT INTO leak_readers VALUES (?, ?, ?, ?)", [(n, i, c, r) for (n, i), (c, r) in sorted(readers.items())])
+    conn.executemany("INSERT OR REPLACE INTO leak_readers VALUES (?, ?, ?, ?)",
+                     [(n, i, c, r) for (n, i, a), (c, r) in sorted(readers.items())])
     conn.commit()
 
 
@@ -1352,6 +1410,14 @@ def macro_table(definitions):
     seeds = FREE_FUNCTIONS | ALLOC_FUNCTIONS | NORETURN_FUNCTIONS
     frees = set(FREE_FUNCTIONS)
     aliases, macros, loops = {}, {}, set()
+    allocating = set(ALLOC_FUNCTIONS)  # names that are the allocator itself through macro aliases (`#define xmalloc malloc`)
+    for _ in range(MAX_MACRO_DEPTH + 2):
+        grown = {name: d[1] for name, defs in definitions.items() if name not in allocating and name not in seeds
+                 for d in defs if d[0] == "alias" and d[1] in allocating}
+        if not grown:
+            break
+        aliases.update(grown)
+        allocating |= set(grown)
     for _ in range(MAX_MACRO_DEPTH + 2):
         pattern = re.compile(r"\b(?:" + "|".join(sorted(map(re.escape, frees))) + r")\b\s*\(")
         changed = False

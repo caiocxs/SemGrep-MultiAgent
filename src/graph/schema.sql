@@ -130,3 +130,10 @@ CREATE TABLE IF NOT EXISTS leak_readers (
     rate      REAL NOT NULL,
     PRIMARY KEY (name, arg_index)
 );
+
+-- Allocators learned from how the code uses them: names with at least 8 sites whose result is freed afterwards about as often as malloc's is.
+CREATE TABLE IF NOT EXISTS learned_allocators (
+    name  TEXT PRIMARY KEY,
+    sites INTEGER NOT NULL,
+    rate  REAL NOT NULL
+);
