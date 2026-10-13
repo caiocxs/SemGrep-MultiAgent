@@ -198,9 +198,9 @@ def test_loop_macro_is_found_from_its_body(tmp_path):
 
 SITES = 60  # the one use after the call that the tests plant must stay under the 2% floor of the after-use rate
 # What the code itself proves: pool_release and buf_release free their parameter (so the word `release` names a deallocator, seen in two of
-# them), and eight other functions free nothing (so the word is not one every name has).
+# them), and eight other functions free nothing (so the word is not one every name has); they only read it: passing a parameter on to a call would prove nothing.
 PROVEN = ("static void pool_release(char *x) {\n free(x);\n}\nstatic void buf_release(char *x) {\n free(x);\n}\n"
-          + "".join(f"static void other{i}(char *x) {{\n puts(x);\n}}\n" for i in range(8)))
+          + "".join(f"static int other{i}(char *x) {{\n return x[0];\n}}\n" for i in range(8)))  # they only read it: handing it on proves nothing
 PROVEN_LINES = 30
 
 
@@ -235,6 +235,31 @@ def test_function_whose_argument_is_used_afterwards_is_not_a_release_function(tm
     body = "".join(f"void g{i}(void) {{\n char *p = make_buf();\n lib_release(p);\n p[0] = 1;\n}}\n" for i in range(SITES))
     conn = graph(tmp_path, PROVEN + body)
     assert list(conn.execute("SELECT * FROM inferred_release")) == []
+
+
+def test_a_concatenated_name_takes_the_word_it_ends_with(tmp_path):
+    tail = "void f(void) {\n char *p = make_buf();\n xrelease(p);\n p[0] = 2;\n}\n"
+    conn = graph(tmp_path, PROVEN + _sites("xrelease") + tail)  # `xrelease` is one word; the code showed `release`
+    base = PROVEN_LINES + 5 * SITES
+    assert uaf(conn) == [(base + 3, base + 4, "p")]
+    assert [tuple(r)[:2] for r in conn.execute("SELECT name, arg_index FROM inferred_release")] == [("xrelease", 0)]
+
+
+def test_a_function_that_hands_its_parameter_on_is_not_evidence_against_its_own_name(tmp_path):
+    # `xrelease` has a body and passes its parameter to a hook, like pfree does: it has proven nothing, so its name is not a negative example
+    own = "static void xrelease(char *x) {\n hook(x);\n}\n"
+    tail = "void f(void) {\n char *p = make_buf();\n xrelease(p);\n p[0] = 2;\n}\n"
+    conn = graph(tmp_path, PROVEN + own + _sites("xrelease") + tail)
+    base = PROVEN_LINES + 3 + 5 * SITES
+    assert uaf(conn) == [(base + 3, base + 4, "p")]
+
+
+def test_a_function_that_only_reads_is_a_negative_example(tmp_path):
+    # the same shape, but the word is shown by functions that do nothing but read their parameter: the name is evidence against
+    readers = "".join(f"static int xshow{i}(char *x) {{\n return x[0];\n}}\n" for i in range(12))
+    tail = "void f(void) {\n char *p = make_buf();\n xshow(p);\n p[0] = 2;\n}\n"
+    conn = graph(tmp_path, PROVEN + readers + _sites("xshow") + tail)
+    assert uaf(conn) == [] and list(conn.execute("SELECT * FROM inferred_release")) == []
 
 
 def test_few_sites_say_nothing(tmp_path):

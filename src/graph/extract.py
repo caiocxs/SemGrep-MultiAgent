@@ -815,9 +815,11 @@ def _words(name):
 def _name_model(conn):
     """
     A small model of the words of release function names, learned from this code: the positives are the functions proven to free a
-    parameter on every path (and the seed `free`), the negatives the functions with parameters that are proven to free none.
-    Returns score(name) -> (sum of the log-odds of the informative words seen in the examples, whether one of them was seen in at least
-    MIN_SUPPORT positives).
+    parameter on every path (and the seed `free`), the negatives the functions with parameters that are proven to free none and never
+    pass a parameter on to a call (a function that hands its parameter to another call has proven nothing: `pfree` hands it to a hook).
+    A word the examples never showed that starts or ends with a word seen in at least MIN_SUPPORT positives (`pfree`, `sdsfree`) counts
+    as that word. Returns score(name) -> (sum of the log-odds of the informative words, whether one was seen in at least MIN_SUPPORT
+    positives).
     """
     positives = {row[0] for row in conn.execute(
         "SELECT DISTINCT f.name FROM summaries s JOIN functions f ON f.id = s.func_id WHERE s.effect = 'frees' AND s.deref = 0")}
@@ -825,7 +827,12 @@ def _name_model(conn):
     freeing = {row[0] for row in conn.execute("SELECT DISTINCT f.name FROM summaries s JOIN functions f ON f.id = s.func_id "
                                               "WHERE s.effect = 'frees'")}
     with_params = {row[0] for row in conn.execute("SELECT DISTINCT f.name FROM params p JOIN functions f ON f.id = p.func_id")}
-    negatives = with_params - freeing - positives
+    hands_on = {row[0] for row in conn.execute(
+        "SELECT DISTINCT f.name FROM call_args ca JOIN events e ON e.id = ca.call_event JOIN functions f ON f.id = e.func_id "
+        "JOIN params p ON p.func_id = f.id "
+        "WHERE ca.var = p.name OR substr(ca.var, 1, length(p.name) + 2) = p.name || '->' "
+        "OR substr(ca.var, 1, length(p.name) + 1) IN (p.name || '.', p.name || '[')")}
+    negatives = with_params - freeing - positives - hands_on
     pos, neg = {}, {}
     for names, table in ((positives, pos), (negatives, neg)):
         for name in names:
@@ -836,10 +843,20 @@ def _name_model(conn):
     def informative(word):
         return (pos.get(word, 0) + neg.get(word, 0)) <= COMMON_WORD * (p_total + n_total)
 
+    anchors = sorted((w for w, c in pos.items() if c >= MIN_SUPPORT and len(w) >= 4 and informative(w)), key=len, reverse=True)
+
+    def anchor_of(word):
+        return next((a for a in anchors if len(word) > len(a) and (word.endswith(a) or word.startswith(a))), None)
+
     def score(name):
         total, supported = 0.0, False
-        for word in _words(name):
-            if (word not in pos and word not in neg) or not informative(word):
+        for raw in _words(name):
+            anchor = anchor_of(raw)
+            # a word seen with enough positive examples stands for itself; one seen once or never (`pfree`, defined once in a frontend
+            # copy that calls `pg_free`) is read through the word it ends or starts with (`free`)
+            known = raw in pos or raw in neg
+            word = raw if known and (pos.get(raw, 0) >= MIN_SUPPORT or neg.get(raw, 0) > 0 or anchor is None) else (anchor or (raw if known else None))
+            if word is None or not informative(word):
                 continue  # a word the code never showed, or one every name has, says nothing
             total += math.log((pos.get(word, 0) + 1) / (p_total + 2)) - math.log((neg.get(word, 0) + 1) / (n_total + 2))
             supported = supported or pos.get(word, 0) >= MIN_SUPPORT
