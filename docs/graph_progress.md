@@ -182,6 +182,22 @@ learning of names follows the rule of the previous protocol: **no list of alloca
 - **Not in this change:** the CWE-401 variants through function pointers, pointer-to-pointer and static globals (flows 32, 44, 45, 54 to 68 are expected to be
   partly missed), learned allocators, C++ `new`.
 
+## Protocol: ownership, second round (written on 2026-10-13 **before** the change)
+
+The first held-out measure of the leak query failed on two of three measurable projects (tmux 0.321, PostgreSQL 0.244; vim passed, SQLite was blind). The
+question the query cannot answer well is who owns a pointer after it leaves the function's hands. This round reads the alerts of those two projects, so they join
+Git, curl, Redis and OpenSSL as **development** projects for the leak query, and improves how ownership is decided, with changes that are general and learned from
+the code (no list of names).
+
+- **Plan:** read the alerts of tmux and PostgreSQL grouped by cause (not one by one), name the cause of each group, and change the analyzer only for causes that
+  are general (a pattern of C, not a name). Keep every change if it lowers the alerts on the six development projects without costing Juliet 401 more than 1 point
+  of recall or adding false positives, and without changing CWE-416 and CWE-415 on Juliet.
+- **Held-out:** three projects never used for the leak query and never measured before, blobless clones at their head, all `.c` files, headers read for `#define`s:
+  **libuv** (`libuv/libuv`), **OpenSSH portable** (`openssh/openssh-portable`) and **Lua** (`lua/lua`). Measured once with the query frozen, the coverage rule (at
+  least 1 allocation site per KLOC, else blind) and success at most 0.1 alerts/KLOC on all files. The number of **distinct allocation sites** that raise an alert is
+  reported next to the alert count, since one wrong ownership decision yields many alerts.
+- **Not in this change:** C++ `new`, the Juliet flows through pointer copies, pointer-to-pointer, function pointers and static globals.
+
 ## Where the arm stands (2026-10-12, final extractor)
 
 | Question | Status |
