@@ -1,7 +1,7 @@
 # Event-graph analyzer (design sketch)
 
 Status: on branch `feat/graph-analyzer`. The schema, the path queries, the tree-sitter extractor, the scoring against Juliet and real
-projects, and the fix-commit evaluation exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`, 65 tests); the LLM
+projects, and the fix-commit evaluation exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`, `tests/test_graph_leaks.py`, 83 tests); the LLM
 judge was decided against. The tables above the section "No hand-written names" were measured at earlier versions of the extractor (with
 hand-written lists); that section has the current numbers.
 
@@ -201,6 +201,26 @@ Juliet: CWE-416 134/138 (0 false positives), CWE-415 150/272 (0 false positives)
   per-site count would show the same failures as tens of mistakes, not hundreds of alerts.
 - **Seeing more is not free.** The PostgreSQL pass at 0.006 alerts per KLOC came from not recognizing its most used release; once recognized, the rate
   is 0.126. The same happened to Redis with `zfree` and `sdsfree`.
+
+## CWE-401, memory leak (2026-10-13)
+
+The same event graph, with `escape` (a pointer copied into something else), `null` (the branch where a pointer is known to be NULL) and the callee of each
+allocation. A leak is an allocation of a local variable that can reach a return on some path along which the variable is not freed, not handed to someone who
+keeps it, not stored, not returned and not overwritten; `p = realloc(p, n)` leaks the old block on the path where the call fails. Which calls keep a pointer, and
+which functions allocate, are found from the code like the releases: bodies (to a fixed point), readers and allocators learned from how often the caller frees
+afterwards, and constants folded so that a branch behind `if (1)` is the only one that runs.
+
+| | Result |
+|---|---|
+| Juliet CWE-401, C cases (868 BAD, 868 GOOD; the C++ `new` cases and flows 81 to 84 left out) | **648 of 868 cases (74.7%)**; **200 false positives**, all in variants 09, 10, 11, 13 and 14, whose flags are defined in support files that are not in the data. Variants 31, 32, 34, 44, 45 and 63 to 68 (pointer copies, pointer-to-pointer, function pointers, static globals) are not found |
+| Development (Git, curl, Redis, OpenSSL), alerts per KLOC in all files | 0.175, 0.097, 0.091, 0.092; allocation sites followed per KLOC 3.2, 2.2, 1.8, 1.0 |
+| **Not used to design it, measured once** | tmux 0.321 (fails), PostgreSQL 0.244 (fails), vim 0.044 (passes), SQLite blind (0.8 allocation sites per KLOC, below the minimum of 1) |
+
+Reading: the leak query finds what it was built to find on Juliet and is close to the limit on the four projects it was developed on, but of the three held-out
+projects it can be measured on, one passes. It generalizes less well than use after free, because the question "who owns this pointer now" depends on conventions the
+analyzer learns less reliably: wrappers that hand the pointer to helpers, registries, ownership passed through fields. How it got there is in
+[graph_progress.md](graph_progress.md): a regression caught by the benchmark (derived paths taken for hand-offs), two blind projects fixed with learned allocators, and
+a reordering that traded coverage for precision.
 
 ## Does it find real bugs? The 16 fix commits of Git (`src/graph/fixcommits.py`)
 
