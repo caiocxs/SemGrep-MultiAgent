@@ -1,7 +1,7 @@
 # Event-graph analyzer (design sketch)
 
 Status: on branch `feat/graph-analyzer`. The schema, the path queries, the tree-sitter extractor, the scoring against Juliet and real
-projects, and the fix-commit evaluation exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`, 62 tests); the LLM
+projects, and the fix-commit evaluation exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`, 65 tests); the LLM
 judge was decided against. The tables above the section "No hand-written names" were measured at earlier versions of the extractor (with
 hand-written lists); that section has the current numbers.
 
@@ -173,6 +173,34 @@ most 0.1 alerts/KLOC), with no list of names inside it. It is **not** a claim ab
 pointer) are outside what the analyzer can see and are reported as blind, PostgreSQL passes with a coverage just above the minimum because the model of
 names misses `pfree`, and Redis stays above 0.1 on one side. The CWE-415 recall on Juliet is lower than with the old lists (150 against 162 of 272) because
 the summaries that count a free only on every path cannot see the variants where a callee frees only if a global flag is set.
+
+## Final extractor: sub-word names and the projects it has not seen (2026-10-12)
+
+The name model now reads a concatenated name through the word it learned (`pfree` through `free`, `zfree`, `hi_sdsfree`), and a function that only
+hands its parameter on to a call (as `pfree` does to a hook) no longer counts as a negative example. Effect: the project's own releases are seen. It
+came with a price: more of the code's releases are seen, so more false alerts appear.
+
+| Project (KLOC) | Free events per KLOC | Use after free, train / test (all files) | Double free, train / test (all files) | Status |
+|---|---|---|---|---|
+| Git (400) | 11.2 | 0.000 / 0.000 (0.000) | 0.017 / 0.009 (0.015) | development, pass |
+| curl (267) | 10.5 | 0.016 / 0.093 (0.037) | 0.021 / 0.080 (0.037) | development, pass |
+| OpenSSL (862) | 17.4 | 0.016 / 0.021 (0.017) | 0.018 / 0.025 (0.020) | development, pass |
+| Redis (320) | 13.8 | 0.084 / 0.283 (0.144) | 0.027 / 0.136 (0.059) | development, **fail** on use after free |
+| PostgreSQL (1597) | 11.0 (was 3.9) | 0.135 / 0.101 (0.126) | 0.039 / 0.018 (0.033) | seen, **fail** since `pfree` is learned (0.006 / 0.005 before) |
+| tmux (109) | 16.0 | 0.000 / 0.000 (0.000) | 0.058 / 0.000 (0.046) | never seen when measured, pass |
+| **SQLite (440)** | 7.1 | **0.100 / 0.023 (0.077)** | 0.042 / 0.000 (0.030) | **never seen, pass** |
+| **vim (572)** | 5.2 | **0.515 / 0.146 (0.409)** | 0.120 / 0.085 (0.110) | **never seen, fail** |
+| nginx (242), libxml2 (190) | 0.5, 0.1 | 0 / 0 | 0 / 0 | blind: not a result |
+
+Juliet: CWE-416 134/138 (0 false positives), CWE-415 150/272 (0 false positives), unchanged.
+
+- **Honest reading.** Of the projects never seen when they were measured, tmux and SQLite pass and vim fails (PostgreSQL passed before the sub-word fix
+  and fails after it). The method generalizes in part, not in full: about half of the real projects measured pass the limit of 0.1 with no list of names in
+  the analyzer, and the failures concentrate in a few wrongly classified calls (vim: 234 use-after-free alerts from 20 free sites, 179 in one function).
+- **The count per KLOC overstates independent mistakes.** One call taken for a release makes every later use of the variable an alert, in every path; a
+  per-site count would show the same failures as tens of mistakes, not hundreds of alerts.
+- **Seeing more is not free.** The PostgreSQL pass at 0.006 alerts per KLOC came from not recognizing its most used release; once recognized, the rate
+  is 0.126. The same happened to Redis with `zfree` and `sdsfree`.
 
 ## Does it find real bugs? The 16 fix commits of Git (`src/graph/fixcommits.py`)
 
