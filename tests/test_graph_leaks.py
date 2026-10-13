@@ -123,3 +123,50 @@ def test_allocation_freed_in_each_iteration_does_not_leak(tmp_path):
 
 def test_exit_path_is_not_a_leak(tmp_path):
     assert leaks(tmp_path, "void f(int c) {\n char *p = malloc(4);\n if (c) {\n  exit(1);\n }\n free(p);\n}\n") == []
+
+
+def test_a_function_that_returns_an_int_is_not_an_allocator(tmp_path):
+    src = "static int bogus(void) {\n return malloc(4);\n}\nvoid f(void) {\n char *p = bogus();\n p[0] = 1;\n}\n"
+    assert leaks(tmp_path, src) == []
+
+
+def test_a_variable_that_cannot_hold_a_pointer_is_not_followed(tmp_path):
+    src = "static char *xnew(void) {\n return malloc(4);\n}\nvoid f(void) {\n int n = xnew();\n n = 1;\n}\n"
+    assert leaks(tmp_path, src) == []
+
+
+def test_returning_the_address_of_a_field_gives_the_block_away(tmp_path):
+    assert leaks(tmp_path, "struct s *f(void) {\n struct s *p = malloc(8);\n return &p->base;\n}\n") == []
+
+
+def test_chained_assignment_gives_the_value_to_the_first_name(tmp_path):
+    assert leaks(tmp_path, "void f(void) {\n char *copy;\n char *s;\n copy = s = malloc(4);\n free(copy);\n}\n") == []
+
+
+def test_macro_that_stores_its_parameter_keeps_the_block(tmp_path):
+    src = "#define PUSH(head, elm) do { *(head) = (elm); } while (0)\nvoid f(char **list) {\n char *p = malloc(4);\n PUSH(list, p);\n}\n"
+    assert leaks(tmp_path, src) == []
+
+
+def test_macro_with_token_pasting_is_an_opaque_call_that_takes_the_pointer(tmp_path):
+    src = "#define INSERT(name, x) name##_insert(x)\nvoid f(void) {\n char *p = malloc(4);\n INSERT(tree, p);\n}\n"
+    assert leaks(tmp_path, src) == []
+
+
+def test_realloc_of_a_null_pointer_is_an_allocation(tmp_path):
+    assert leaks(tmp_path, "void f(void) {\n char *p = NULL;\n p = realloc(p, 10);\n}\n") == [(3, "p")]
+
+
+def test_a_function_that_sometimes_returns_memory_it_does_not_own_is_not_an_allocator(tmp_path):
+    src = "static char *pick(int c) {\n static char buf[4];\n if (c) {\n  return malloc(4);\n }\n return buf;\n}\nvoid f(void) {\n char *p = pick(1);\n p[0] = 1;\n}\n"
+    assert leaks(tmp_path, src) == []
+    src = "static char *mk(int c) {\n if (c) {\n  return malloc(4);\n }\n return NULL;\n}\nvoid f(void) {\n char *p = mk(1);\n p[0] = 1;\n}\n"
+    assert leaks(tmp_path, src) == [(8, "p")]
+
+
+def test_an_allocator_whose_own_sites_are_flagged_far_more_than_mallocs_is_an_arena(tmp_path):
+    many = "".join(f"void g{i}(void) {{\n char *p = arena();\n p[0] = 1;\n}}\n" for i in range(10))
+    arena = "static char *arena(void) {\n return malloc(4);\n}\n"
+    assert leaks(tmp_path, arena + many) == []  # every one of ten sites would be a leak: the memory is not the caller's to free
+    few = "".join(f"void g{i}(void) {{\n char *p = arena();\n p[0] = 1;\n}}\n" for i in range(2))
+    assert len(leaks(tmp_path, arena + few)) == 2  # two sites say nothing

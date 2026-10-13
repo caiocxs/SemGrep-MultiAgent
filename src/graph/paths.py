@@ -61,6 +61,11 @@ def double_free(conn):
     return [dict(row) for row in conn.execute(_CANDIDATES.format(kinds="'free'"))]
 
 
+# The allocation sites the leak query follows: a local variable given what an allocator returned. `p = f(p, ..)` counts only for the standard library
+# and for functions the code proves to return their own allocation, not for learned ones (`bms_add_member(set, i)` returns the set it was given).
+ALLOC_SITES_SQL = ("SELECT a.event_id, a.callee FROM allocs a JOIN leak_allocators la ON la.name = a.callee "
+                   "WHERE a.local = 1 AND (a.selfarg = 0 OR la.proven = 1)")
+
 RETURN, END, REALLOC_SELF, SCOPE_END = "<return>", "<end>", "<realloc-self>", "<scope-end>"  # details the extractor gives to the markers it needs here
 
 
@@ -80,7 +85,8 @@ def memory_leak(conn):
     calls = {r[0] for r in conn.execute("SELECT call_event FROM call_args")}
     sites = conn.execute(
         "SELECT a.event_id, e.var, f.name, fi.path FROM allocs a JOIN events e ON e.id = a.event_id JOIN functions f ON f.id = e.func_id "
-        "JOIN files fi ON fi.id = f.file_id WHERE a.local = 1 AND a.callee IN (SELECT name FROM leak_allocators) ORDER BY fi.path, e.line").fetchall()
+        "JOIN files fi ON fi.id = f.file_id JOIN leak_allocators la ON la.name = a.callee "
+        "WHERE a.local = 1 AND (a.selfarg = 0 OR la.proven = 1) ORDER BY fi.path, e.line").fetchall()
     found = []
     for alloc, var, function, path in sites:
         seen, stack, hit = set(), [(alloc, 0)], None  # mode 0: held; 1: p = realloc(p, n) happened; 2: the old block is lost (p is NULL)

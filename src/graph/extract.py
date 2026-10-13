@@ -83,6 +83,8 @@ BIG_STACK = 256 * 1024 * 1024  # stack of the thread that walks it (smaller size
 ENTRY, RETURN, END, NORETURN = "<entry>", "<return>", "<end>", "<noreturn>"  # details of the marker events of a function
 SCOPE_END = "<scope-end>"  # detail of the reset that marks a variable going out of scope (a pointer still holding an allocation leaks there)
 REALLOC_SELF = "<realloc-self>"  # detail of `p = realloc(p, n)`: the old block is lost if the call fails
+ARENA_FACTOR = 3.0       # an allocator whose own sites are flagged as leaks this many times as malloc's (and 15%) is an arena's, not an owner's
+ARENA_FLOOR = 0.15
 MIN_ALLOC_RATE = 0.25    # a learned allocator's result is freed afterwards in at least this share of its sites (and half of malloc's share)
 MIN_READER_RATE = 0.25   # a function with no body is a reader if the caller frees the pointer afterwards in at least this share of its sites
 _SUBST = []  # stack of {macro parameter: argument path or None} while a macro body is being walked
@@ -151,6 +153,7 @@ class _Function:
         self.x = extractor
         self.params = set(params)
         self.locals = set(params)  # the names that belong to this function: parameters and declared variables
+        self.plain = set()         # of those, the ones declared as an int, a char, a struct by value...: they cannot own an allocation
         self.macro_depth = 0
         self.call_row = None     # while a macro body is walked, the line of the call, for the events it makes
         self.copy_of = {}        # local -> parameter it is a copy of (q = (T *)param)
@@ -299,12 +302,22 @@ class _Function:
     def _acquire(self, eid, value, var):
         """Notes that `var` was given what a call returned (`p = f(..)`): the leak query follows it if f turns out to allocate."""
         callee = self._callee(value)
-        if callee and var and not _BASE.search(var):
-            self.x.allocs.append((eid, callee, 1 if var in self.locals else 0))
+        stripped = _strip(value)
+        arguments = stripped.child_by_field_name("arguments") if stripped is not None and stripped.type == "call_expression" else None
+        selfarg = arguments is not None and any(path_of(a) == var for a in arguments.named_children)
+        if callee and var and not _BASE.search(var) and var not in self.plain:
+            self.x.allocs.append((eid, callee, 1 if var in self.locals else 0, 1 if selfarg else 0))
 
     def _escapes(self, value, target):
         """A pointer copied into something else is held there now: `x = p`, `s->f = p`, and the old block of `q = realloc(p, n)`."""
         copied = path_of(value)
+        inner = _strip(value)
+        if copied is None and inner is not None:
+            if inner.type == "assignment_expression":  # `copy = s = xstrdup(p)`: copy gets what s now holds
+                copied = path_of(inner.child_by_field_name("left"))
+            elif inner.type == "pointer_expression" and inner.children and inner.children[0].type == "&":
+                derived = path_of(inner.child_by_field_name("argument"))  # `&p->f`: a pointer into p's block
+                copied = _BASE.split(derived, 1)[0] if derived and _BASE.search(derived) else None
         if copied and copied != target:
             self.event("escape", copied, value)
         moved = self._realloc_first(value)
@@ -348,10 +361,14 @@ class _Function:
         if macro is not None and self.macro_depth < MAX_MACRO_DEPTH:
             for arg in args:
                 self.expr(arg)
-            self.expand(macro, args, n)
-            return
-        for arg in args:
-            self.expr(arg)
+            if self.expand(macro, args, n):
+                return
+            args_done = True  # the body could not be read: go on as with any call, without evaluating the arguments twice
+        else:
+            args_done = False
+        if not args_done:
+            for arg in args:
+                self.expr(arg)
         if name in FREE_FUNCTIONS:
             if args and path_of(args[0]):
                 self.event("free", path_of(args[0]), n)
@@ -391,8 +408,8 @@ class _Function:
         params, body = macro
         mapping = {param: path_of(arg) for param, arg in zip(params, args)}
         root = _macro_body(body)
-        if root is None:
-            return
+        if root is None or root.has_error:
+            return False
         outer = self.call_row
         self.call_row = call.start_point[0] if outer is None else outer
         self.macro_depth += 1
@@ -404,6 +421,7 @@ class _Function:
             _SUBST.pop()
             self.macro_depth -= 1
             self.call_row = outer
+        return True
 
     def iteration_macro(self, args):
         """`foreach(h, k, v, { body })`: a loop whose plain-identifier arguments are assigned at every iteration."""
@@ -492,6 +510,11 @@ class _Function:
                 name, kind = _identifier_of(declarator), "reset"  # a new variable starts without a value
             if name:
                 self.locals.add(name)
+                if _can_hold_pointer(n.child_by_field_name("type"), declarator.child_by_field_name("declarator")
+                                     if declarator.type == "init_declarator" else declarator):
+                    self.plain.discard(name)
+                else:
+                    self.plain.add(name)
                 eid = self.event(kind, name, declarator)
                 if value is not None:
                     self._acquire(eid, value, name)
@@ -742,8 +765,22 @@ class _Function:
             self.expr(child)
             self.use(path_of(child), child)
             held = path_of(child)
-            escaped = self.event("escape", held, child) if held else None
-            self.x.returns.append((self.func_id, escaped, self._callee(child)))
+            stripped = _strip(child)
+            handed = held
+            if held is None and stripped is not None and stripped.type == "pointer_expression" and stripped.children \
+                    and stripped.children[0].type == "&":  # `return &p->base;` gives the block away as much as `return p;`
+                derived = path_of(stripped.child_by_field_name("argument"))
+                handed = _BASE.split(derived, 1)[0] if derived and _BASE.search(derived) else None
+            escaped = self.event("escape", handed, child) if handed else None
+            if self._callee(child):
+                shape = "call"
+            elif held:
+                shape = "path"
+            elif stripped is not None and _text(stripped) in ("NULL", "0", "nullptr"):
+                shape = "null"
+            else:
+                shape = "other"
+            self.x.returns.append((self.func_id, escaped, self._callee(child), shape))
         self.event("join", None, n, detail=RETURN)  # the path leaves the function here, even if it made no event before
         self.frontier = set()
 
@@ -799,8 +836,8 @@ class Extractor:
         c.executemany("INSERT OR IGNORE INTO call_args (call_event, callee_name, arg_index, var, addr) VALUES (?, ?, ?, ?, ?)",
                       self.call_args)
         c.executemany("INSERT INTO deref_effects VALUES (?, ?, ?)", self.deref_effects)
-        c.executemany("INSERT OR IGNORE INTO allocs VALUES (?, ?, ?)", self.allocs)
-        c.executemany("INSERT INTO returns VALUES (?, ?, ?)", self.returns)
+        c.executemany("INSERT OR IGNORE INTO allocs VALUES (?, ?, ?, ?)", self.allocs)
+        c.executemany("INSERT INTO returns VALUES (?, ?, ?, ?)", self.returns)
         self.events, self.flow, self.call_args, self.deref_effects = [], [], [], []
         self.allocs, self.returns = [], []
 
@@ -818,19 +855,38 @@ def _functions(root):
                 stack.append(child)
 
 
+_VALUE_TYPES = ("primitive_type", "sized_type_specifier", "struct_specifier", "union_specifier", "enum_specifier")
+
+
+def _can_hold_pointer(type_node, declarator):
+    """False for a declaration that cannot hold an address: an int, a char, a struct by value, with no `*` or array in the declarator."""
+    node = declarator
+    while node is not None:
+        if node.type in ("pointer_declarator", "array_declarator", "abstract_pointer_declarator"):
+            return True
+        node = node.child_by_field_name("declarator")
+    return type_node is None or type_node.type not in _VALUE_TYPES
+
+
 def _function_name_and_params(node):
-    declarator = node.child_by_field_name("declarator")
+    """(name, parameter names, whether the return type can be a pointer, names of the parameters that cannot hold one)."""
+    top = node.child_by_field_name("declarator")
+    declarator = top
     while declarator is not None and declarator.type != "function_declarator":
         declarator = declarator.child_by_field_name("declarator")
     if declarator is None:
-        return None, []
+        return None, [], True, set()
     name = _identifier_of(declarator.child_by_field_name("declarator"))
-    params = []
+    returns_pointer = _can_hold_pointer(node.child_by_field_name("type"), top if top is not declarator else None)
+    params, plain = [], set()
     parameter_list = declarator.child_by_field_name("parameters")
     for parameter in (parameter_list.named_children if parameter_list is not None else []):
         if parameter.type == "parameter_declaration":
-            params.append(_identifier_of(parameter.child_by_field_name("declarator")))
-    return name, params
+            pname = _identifier_of(parameter.child_by_field_name("declarator"))
+            params.append(pname)
+            if pname and not _can_hold_pointer(parameter.child_by_field_name("type"), parameter.child_by_field_name("declarator")):
+                plain.add(pname)
+    return name, params, returns_pointer, plain
 
 
 def extract_file(conn, path, extractor=None):
@@ -844,16 +900,17 @@ def extract_file(conn, path, extractor=None):
     file_id = conn.execute("SELECT id FROM files WHERE path = ?", (str(path),)).fetchone()[0]
     count = 0
     for node in _functions(tree.root_node):
-        name, params = _function_name_and_params(node)
+        name, params, returns_pointer, plain_params = _function_name_and_params(node)
         body = node.child_by_field_name("body")
         if not name or body is None:
             continue
-        cur = conn.execute("INSERT INTO functions (file_id, name, start_line, end_line) VALUES (?, ?, ?, ?)",
-                           (file_id, name, node.start_point[0] + 1, node.end_point[0] + 1))
+        cur = conn.execute("INSERT INTO functions (file_id, name, start_line, end_line, pointer) VALUES (?, ?, ?, ?, ?)",
+                           (file_id, name, node.start_point[0] + 1, node.end_point[0] + 1, int(returns_pointer)))
         func_id = cur.lastrowid
         conn.executemany("INSERT INTO params VALUES (?, ?, ?)",
                          [(func_id, i, p) for i, p in enumerate(params) if p])
         builder = _Function(extractor, func_id, lines, [p for p in params if p])
+        builder.plain |= plain_params
         builder.event("join", None, body, detail=ENTRY)  # a path with no event at all must still start somewhere
         builder.stmt(body)
         builder.event("join", None, body, detail=END)  # falling off the end of the function is a return as well
@@ -1119,6 +1176,7 @@ def prepare_leaks(conn):
     callers free the pointer afterwards in at least MIN_READER_RATE of at least MIN_SITES sites, which do not take ownership.
     """
     name_of = dict(conn.execute("SELECT id, name FROM functions"))
+    cannot_return_pointer = {r[0] for r in conn.execute("SELECT id FROM functions WHERE pointer = 0")}
     var_of, kind, func_of = {}, {}, {}
     for event_id, k, var, func_id in conn.execute("SELECT id, kind, var, func_id FROM events"):
         kind[event_id], var_of[event_id], func_of[event_id] = k, var, func_id
@@ -1170,19 +1228,36 @@ def prepare_leaks(conn):
     allocated = {}
     for callee, var, func_id in conn.execute("SELECT a.callee, e.var, e.func_id FROM allocs a JOIN events e ON e.id = a.event_id"):
         allocated.setdefault((func_id, var), set()).add(callee)
-    returns = conn.execute("SELECT func_id, event_id, callee FROM returns").fetchall()
+    returns = conn.execute("SELECT func_id, event_id, callee, shape FROM returns").fetchall()
+    by_function = {}
+    for func_id, event_id, callee, shape in returns:
+        by_function.setdefault(func_id, []).append((event_id, callee, shape))
     escapes = {}
     for event_id, k in kind.items():
         if k == "escape" and var_of[event_id] is not None:
             escapes[(func_of[event_id], var_of[event_id])] = escapes.get((func_of[event_id], var_of[event_id]), 0) + 1
     returned = {}
-    for func_id, event_id, callee in returns:
+    for func_id, event_id, callee, shape in returns:
         if event_id is not None:
             returned[(func_id, var_of[event_id])] = returned.get((func_id, var_of[event_id]), 0) + 1
+
+    def gives_allocation(func_id, event_id, callee, shape):
+        if shape == "null":
+            return True
+        if callee in allocators:
+            return True
+        return (event_id is not None and bool(allocated.get((func_id, var_of[event_id]), set()) & allocators)
+                and escapes.get((func_id, var_of[event_id]), 0) == returned.get((func_id, var_of[event_id]), 0)
+                and (func_id, var_of[event_id]) not in handed)
+
     for _ in range(MAX_SUMMARY_ROUNDS):
         grown = set()
-        for func_id, event_id, callee in returns:
-            if name_of[func_id] in allocators:
+        for func_id, event_id, callee, shape in returns:
+            if name_of[func_id] in allocators or func_id in cannot_return_pointer:
+                continue
+            # every return must give back its own allocation (or NULL): one that returns something else, a static buffer or a part of
+            # an argument, makes the function something that sometimes hands out memory it does not own
+            if not all(gives_allocation(func_id, *r) for r in by_function[func_id]):
                 continue
             # what it returns must be its own fresh allocation: a function that also stores the pointer somewhere, or hands it to a call that
             # keeps it (a cache, a table, a registry), gives the caller something that is held elsewhere, like `getenv`, or a lookup
@@ -1226,16 +1301,50 @@ def prepare_leaks(conn):
         rate, total = freed_rate(items)
         if rate is not None and total >= MIN_SITES and rate >= need:
             learned_allocs[callee] = (len(items), rate)
+    proven_allocators = set(allocators)
     allocators |= set(learned_allocs)
     conn.execute("DELETE FROM learned_allocators")
     conn.executemany("INSERT INTO learned_allocators VALUES (?, ?, ?)", [(n, c, r) for n, (c, r) in sorted(learned_allocs.items())])
     conn.execute("DELETE FROM leak_allocators")
-    conn.executemany("INSERT INTO leak_allocators VALUES (?)", [(n,) for n in sorted(allocators)])
+    conn.executemany("INSERT INTO leak_allocators VALUES (?, ?)", [(n, int(n in proven_allocators)) for n in sorted(allocators)])
     conn.execute("DELETE FROM handoff")
     conn.executemany("INSERT INTO handoff VALUES (?)", [(e,) for e in sorted(hand)])
     conn.execute("DELETE FROM leak_readers")
     conn.executemany("INSERT OR REPLACE INTO leak_readers VALUES (?, ?, ?, ?)",
                      [(n, i, c, r) for (n, i, a), (c, r) in sorted(readers.items())])
+    conn.commit()
+    # Arena allocators. In code assumed correct, an owning allocator's sites are almost never leaks. One whose own sites the query would
+    # flag far more often than malloc's are (`palloc`, freed by its context) hands out memory that somebody else frees: not an owner.
+    flagged = {row["free_event"] for row in paths.memory_leak(conn)}
+    per_name = {}
+    for event_id, callee in conn.execute(paths.ALLOC_SITES_SQL):
+        counts = per_name.setdefault(callee, [0, 0])
+        counts[0] += 1
+        counts[1] += event_id in flagged
+    seed_sites = [per_name[n] for n in ALLOC_FUNCTIONS if n in per_name]
+    seed_rate = sum(c[1] for c in seed_sites) / max(sum(c[0] for c in seed_sites), 1) if seed_sites else 0.0
+    limit = max(ARENA_FACTOR * seed_rate, ARENA_FLOOR)
+    defined_in, defined_times = {}, {}
+    for file_id, name in conn.execute("SELECT file_id, name FROM functions"):
+        defined_in.setdefault(name, set()).add(file_id)
+        defined_times[name] = defined_times.get(name, 0) + 1
+    file_of_event = dict(conn.execute("SELECT e.id, f.file_id FROM events e JOIN functions f ON f.id = e.func_id WHERE e.id IN "
+                                      "(SELECT event_id FROM allocs)"))
+    own_copy = {}  # share of a name's sites that sit in a file that defines it
+    for event_id, callee in conn.execute(paths.ALLOC_SITES_SQL):
+        pair = own_copy.setdefault(callee, [0, 0])
+        pair[0] += 1
+        pair[1] += file_of_event.get(event_id) in defined_in.get(callee, ())
+
+    def one_function(name):
+        """Static functions of the same name in different files (each file calls its own copy) are not one allocator: their sites are not judged together."""
+        return defined_times.get(name, 0) <= 1 or own_copy[name][1] / own_copy[name][0] < 0.8
+
+    arenas = {n: (c[0], c[1] / c[0]) for n, c in per_name.items()
+              if n not in ALLOC_FUNCTIONS and one_function(n) and c[0] >= MIN_SITES and c[1] / c[0] > limit}
+    conn.execute("DELETE FROM arena_allocators")
+    conn.executemany("INSERT INTO arena_allocators VALUES (?, ?, ?)", [(n, c, r) for n, (c, r) in sorted(arenas.items())])
+    conn.executemany("DELETE FROM leak_allocators WHERE name = ?", [(n,) for n in arenas])
     conn.commit()
 
 
@@ -1398,6 +1507,8 @@ def _relevant(params, body):
             return True
         if re.search(r"\b" + word + r"\b\s*\)?\s*=(?!=)", plain):
             return True
+        if re.search(r"=\s*&?\s*\(?\s*" + word + r"\s*\)?\s*(?:->|\.|[;,)])", plain):  # `*head->last = (elm)`, `x = &(elm)->field`
+            return True
     return False
 
 
@@ -1441,7 +1552,7 @@ def macro_table(definitions):
         if name in seeds or name in aliases or name in macros:
             continue
         targets = {d[1] for d in defs if d[0] == "alias"}
-        fns = [d for d in defs if d[0] == "fn"]
+        fns = [d for d in defs if d[0] == "fn" and "##" not in d[2]]  # token pasting builds names the parser cannot read: an opaque call
         if len(targets) == 1 and not fns:
             aliases[name] = next(iter(targets))
             continue

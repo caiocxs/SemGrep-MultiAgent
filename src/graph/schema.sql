@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS functions (
     file_id    INTEGER NOT NULL REFERENCES files(id),
     name       TEXT NOT NULL,
     start_line INTEGER NOT NULL,
-    end_line   INTEGER NOT NULL
+    end_line   INTEGER NOT NULL,
+    pointer    INTEGER NOT NULL DEFAULT 1   -- 0 when the declared return type cannot be a pointer (int, size_t-like primitives, a struct by value)
 );
 
 -- kind: alloc  the variable receives a new object (malloc/calloc/realloc/project allocator)
@@ -102,19 +103,22 @@ CREATE TABLE IF NOT EXISTS inferred_release (
 CREATE TABLE IF NOT EXISTS allocs (
     event_id INTEGER PRIMARY KEY REFERENCES events(id),
     callee   TEXT NOT NULL,
-    local    INTEGER NOT NULL
+    local    INTEGER NOT NULL,
+    selfarg  INTEGER NOT NULL DEFAULT 0     -- 1 for `p = f(p, ..)`: what p held goes through the call
 );
 
 -- What a function returns: the escape event of `return p` (NULL for `return f(..)`) and the callee of `return f(..)` (NULL otherwise).
 CREATE TABLE IF NOT EXISTS returns (
     func_id  INTEGER NOT NULL REFERENCES functions(id),
     event_id INTEGER,
-    callee   TEXT
+    callee   TEXT,
+    shape    TEXT NOT NULL DEFAULT 'other'   -- null | path | call | other: what kind of value this return gives back
 );
 
 -- Names that return a fresh allocation: the standard allocators and the functions the code proves to return one.
 CREATE TABLE IF NOT EXISTS leak_allocators (
-    name TEXT PRIMARY KEY
+    name   TEXT PRIMARY KEY,
+    proven INTEGER NOT NULL DEFAULT 1       -- 1: the standard library or a body that returns its own allocation; 0: learned from the uses
 );
 
 -- Call events that hand the pointer to someone who keeps it (a callee that stores, returns or frees it, or an unknown one that is not a reader).
@@ -133,6 +137,13 @@ CREATE TABLE IF NOT EXISTS leak_readers (
 
 -- Allocators learned from how the code uses them: names with at least 8 sites whose result is freed afterwards about as often as malloc's is.
 CREATE TABLE IF NOT EXISTS learned_allocators (
+    name  TEXT PRIMARY KEY,
+    sites INTEGER NOT NULL,
+    rate  REAL NOT NULL
+);
+
+-- Allocators whose own call sites the leak query would flag too often in code assumed correct: memory that a context or an arena frees, not the caller.
+CREATE TABLE IF NOT EXISTS arena_allocators (
     name  TEXT PRIMARY KEY,
     sites INTEGER NOT NULL,
     rate  REAL NOT NULL

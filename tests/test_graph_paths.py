@@ -5,7 +5,7 @@ def build(events, edges):
     """events: [(id, kind, var, line)]; edges: [(src, dst)]. One file, one function."""
     conn = paths.connect()
     conn.execute("INSERT INTO files VALUES (1, 'a.c')")
-    conn.execute("INSERT INTO functions VALUES (1, 1, 'f', 1, 100)")
+    conn.execute("INSERT INTO functions (id, file_id, name, start_line, end_line) VALUES (1, 1, 'f', 1, 100)")
     conn.executemany("INSERT INTO events (id, func_id, line, kind, var) VALUES (?, 1, ?, ?, ?)",
                      [(i, line, kind, var) for i, kind, var, line in events])
     conn.executemany("INSERT INTO flow VALUES (?, ?)", edges)
