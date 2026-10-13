@@ -149,6 +149,31 @@ showed two causes, not one:
 - **Known gap, not part of this change:** release through `&p` (`av_freep(&p)`, `avcodec_free_context(&ctx)`) is not learned: only by-value
   arguments are measured.
 
+## Protocol: CWE-401, memory leak (written on 2026-10-13 **before** the change)
+
+New CWE for the graph arm. It uses the same events (allocation, free, uses, reassignment, flow) plus three new ones and a new query. The
+learning of names follows the rule of the previous protocol: **no list of allocators, readers or owners written by hand**.
+
+- **Query:** an allocation of a local variable that can reach a return (or the end of the function) on some path along which the variable is not
+  freed, not handed on (stored, returned, passed to a function that keeps it) and not overwritten. Intraprocedural plus call summaries.
+- **New events:** `escape` (a pointer copied into something else: `return p`, `x = p`, `s->f = p`, `*out = p`), `null` (the branch of an `if` where the
+  pointer is known to be NULL, from `if (!p)`, `p == NULL`, `p != NULL`, `if (p)` and the same with an assignment inside the condition), and the
+  allocation's callee name.
+- **Allocators:** the C standard library only (`malloc`, `calloc`, `realloc`, `strdup`, `strndup`, `wcsdup`), plus functions the code proves to
+  return one (a body that returns the result of an allocator, to a fixed point). No learned allocators in this version (a known gap).
+- **Who takes ownership:** a call that receives the pointer stops the tracking only if the callee keeps it (a body that stores, returns or passes it on
+  to something that keeps it, to a fixed point), or if the callee has no body and is not a **reader**. A reader without body is learned like the
+  releases of the earlier protocol: at least 8 call sites and the pointer freed afterwards by the caller in at least 25% of them (a reader such as a
+  printing function is followed by the caller's `free`; a function that takes ownership is not).
+- **`p = realloc(p, n)`** keeps the old block alive on the path where `p` becomes NULL (the classic leak when `realloc` fails).
+- **Data:** Juliet CWE-401, C cases only (the `new_*` and flows 81 to 84 are C++ and are left out, counted and named). Classification as in the gate (a
+  report in a `*bad*` function of a BAD file is a hit, in a `*good*` function a false positive).
+- **Development:** Juliet CWE-401 and Git, curl, Redis, OpenSSL. **Held-out:** tmux, SQLite, vim and PostgreSQL, which were not used to design
+  this query; measured once after the query is frozen, with the coverage rule (the number of allocations the extractor sees per KLOC, at least 1) and success
+  at most 0.1 alerts/KLOC. The alert count overstates independent mistakes, so the number of distinct allocation sites is reported with it.
+- **Not in this change:** the CWE-401 variants through function pointers, pointer-to-pointer and static globals (flows 32, 44, 45, 54 to 68 are expected to be
+  partly missed), learned allocators, C++ `new`.
+
 ## Where the arm stands (2026-10-12, final extractor)
 
 | Question | Status |
