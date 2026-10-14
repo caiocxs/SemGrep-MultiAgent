@@ -170,3 +170,12 @@ def test_an_allocator_whose_own_sites_are_flagged_far_more_than_mallocs_is_an_ar
     assert leaks(tmp_path, arena + many) == []  # every one of ten sites would be a leak: the memory is not the caller's to free
     few = "".join(f"void g{i}(void) {{\n char *p = arena();\n p[0] = 1;\n}}\n" for i in range(2))
     assert len(leaks(tmp_path, arena + few)) == 2  # two sites say nothing
+
+
+def test_null_test_inside_a_compound_condition_is_a_null_branch(tmp_path):
+    either = "int f(int n) {\n char *p;\n if (n < 0 || (p = malloc(n)) == NULL) {\n  return -1;\n }\n free(p);\n return 0;\n}\n"
+    assert leaks(tmp_path, either) == []
+    both = "int f(int n) {\n char *p = malloc(n);\n if (n > 0 && p != NULL) {\n  free(p);\n }\n return 0;\n}\n"
+    assert [line for line, _ in leaks(tmp_path, both)] == [2]  # n <= 0 still leaks p: only the NULL side is cleared
+    lone = "int f(int n) {\n char *p = malloc(n);\n if (n < 0 || n > 9) {\n  return -1;\n }\n free(p);\n return 0;\n}\n"
+    assert leaks(tmp_path, lone) == [(2, "p")]  # a condition that does not test p says nothing about it

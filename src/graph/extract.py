@@ -589,6 +589,41 @@ class _Function:
         path = target(cond)
         return (path, False) if path else None
 
+    @classmethod
+    def _assigned_null_test(cls, node):
+        """(path, null when true) for a test whose tested expression is an assignment, `(p = malloc(n)) == NULL`; else None."""
+        cond = _strip(node)
+        test = cls._null_test(cond)
+        if not test or cond is None:
+            return None
+        if cond.type == "unary_expression" and cond.named_children:
+            tested = [cond.named_children[0]]
+        elif cond.type == "binary_expression":
+            tested = [cond.child_by_field_name("left"), cond.child_by_field_name("right")]
+        else:
+            tested = [cond]
+        return test if any(_strip(t) is not None and _strip(t).type == "assignment_expression" for t in tested) else None
+
+    @classmethod
+    def _null_facts(cls, condition):
+        """(paths NULL whenever the condition is true, paths NULL whenever it is false). Short-circuit makes most of a compound
+        condition say nothing: in `a || p == NULL` the true side may also be `a` with p set, so only a test that assigns p in a
+        later operand (`a || (p = malloc(n)) == NULL`: p is not even set when `a` decides) counts on that side."""
+        cond = _strip(condition)
+        if cond is not None and cond.type == "binary_expression":
+            operator = cond.child_by_field_name("operator")
+            if operator is not None and _text(operator) in ("&&", "||"):
+                left, right = cond.child_by_field_name("left"), cond.child_by_field_name("right")
+                (lt, lf), (rt, rf) = cls._null_facts(left), cls._null_facts(right)
+                late = cls._assigned_null_test(right)
+                if _text(operator) == "||":
+                    return ([late[0]] if late and late[1] else []), lf + rf
+                return lt + rt, ([late[0]] if late and not late[1] else [])
+        test = cls._null_test(cond)
+        if not test:
+            return [], []
+        return ([test[0]], []) if test[1] else ([], [test[0]])
+
     def s_if_statement(self, n):
         condition = n.child_by_field_name("condition")
         self.expr(condition)
@@ -598,15 +633,15 @@ class _Function:
             if branch is not None:
                 self.stmt(branch)
             return
-        test = self._null_test(condition)
+        when_true, when_false = self._null_facts(condition)
         entry = set(self.frontier)
-        if test and test[1]:  # the consequence runs with the pointer NULL
-            self.event("null", test[0], condition)
+        for path in when_true:  # the consequence runs with the pointer NULL
+            self.event("null", path, condition)
         self.stmt(n.child_by_field_name("consequence"))
         after_then = set(self.frontier)
         self.frontier = entry
-        if test and not test[1]:  # the other side, also when there is no else, runs with the pointer NULL
-            self.event("null", test[0], condition)
+        for path in when_false:  # the other side, also when there is no else, runs with the pointer NULL
+            self.event("null", path, condition)
         alternative = n.child_by_field_name("alternative")
         if alternative is not None:
             self.stmt(alternative)
