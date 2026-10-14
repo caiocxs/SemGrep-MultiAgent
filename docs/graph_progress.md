@@ -355,9 +355,9 @@ files (variants 09 to 14). The rule kept is that **no decision may lie between t
 SQLite 0.039, vim 0.038, libuv 0.010, zlib 0.000, memcached 0.024 (**all pass**) and **OpenSSH 0.907 (fails)**. Reading 12 of its 142 alerts: all one cause, `fatal_f(..)` after a NULL test.
 It is `#define fatal_f(...) sshfatal(..)` with `sshfatal` declared `__attribute__((noreturn)) __attribute__((format(..)))`: the declaration reader did not accept another attribute after
 the `noreturn`. **Fix (general, one regex, one test): the declaration may carry other attributes around `noreturn`.** OpenSSH falls from 142 to 7 alerts (0.045); it is a development project now.
-Side effects, all measured: Juliet 416, 415, 401 and CWE-476 unchanged; use after free and double free unchanged on Git, curl, Redis, OpenSSL; the leak query on **Git 0.103 to 0.070 and OpenSSL 0.069 to 0.043**
-(the NULL tests inside `&&`, `||`, `?:` and loop conditions now reach it too), curl, Redis, tmux, libuv, vim, memcached unchanged; OpenSSH leak 0.153 unchanged. So 12 of 12 projects are under 0.1 for this query, 7 of them never seen by it before the measure.
-`check_after_deref` is not under the limit: 1.7 to 3.3 per KLOC (Git 1338 alerts before the single-path rule, 562 in curl), mostly defensive tests of pointers the contract says are not NULL.
+Side effects, all measured: Juliet 416, 415, 401 and CWE-476 unchanged; use after free and double free unchanged on Git, curl, Redis, OpenSSL; the leak query on **Git 0.103 to 0.070, OpenSSL 0.069 to 0.050 and OpenSSH 0.153 to 0.140**
+(the NULL tests inside `&&`, `||`, `?:` and loop conditions now reach it too), curl, Redis, tmux, libuv, vim, memcached unchanged. So 12 of 12 projects are under 0.1 for this query, 7 of them never seen by it before the measure.
+`check_after_deref` is not under the limit: 1.7 to 3.3 per KLOC (Git 1338 alerts, curl 562, Redis 793, OpenSSL 1499, with the single-path rule), mostly defensive tests of pointers the contract says are not NULL.
 
 **Direct comparison with the reference papers (their benchmark, the frozen query).**
 | Benchmark | RepoAudit | KNighter | CodeQL | Semgrep | Graph, `null_dereference` (and `check_after_deref`) |
