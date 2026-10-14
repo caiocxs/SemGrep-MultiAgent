@@ -23,7 +23,8 @@ from pathlib import Path
 from src.graph import extract, paths
 from src.graph.fixcommits import HUNK, near
 
-QUERIES = {"CWE-401": ("memory_leak", paths.memory_leak), "CWE-416": ("use_after_free", paths.use_after_free)}
+QUERIES = {"CWE-401": ("memory_leak", paths.memory_leak), "CWE-416": ("use_after_free", paths.use_after_free),
+           "CWE-476": ("null_dereference", paths.null_dereference), "CWE-476-check": ("check_after_deref", paths.check_after_deref)}
 MAX_SIBLINGS = 400  # .c files of a directory kept as context for the names the code teaches the extractor
 
 
@@ -161,7 +162,7 @@ def cmd_cases(args):
 def cmd_project(args):
     from src.pipeline.gate import collect_files
     root = Path(args.root)
-    cwe = {"memory_leak": "CWE-401", "use_after_free": "CWE-416"}[args.query]
+    cwe = {"memory_leak": "CWE-401", "use_after_free": "CWE-416", "null_dereference": "CWE-476", "check_after_deref": "CWE-476-check"}[args.query]
     files = collect_files([str(root)])
     headers = sorted(root.rglob("*.h"))
     started = time.time()
@@ -189,7 +190,7 @@ def main():
     cases.add_argument("--only")
     project = sub.add_parser("project")
     project.add_argument("--root", required=True)
-    project.add_argument("--query", choices=("memory_leak", "use_after_free"), required=True)
+    project.add_argument("--query", choices=("memory_leak", "use_after_free", "null_dereference", "check_after_deref"), required=True)
     project.add_argument("--sample", type=int, default=10)
     project.add_argument("--out")
     args = parser.parse_args()

@@ -1723,7 +1723,9 @@ def declared_noreturn(files, definitions):
                  if any(d[0] == "value" and re.search(_NORETURN_ATTRIBUTE, d[1]) for d in defs)}
     marker = "|".join([_NORETURN_ATTRIBUTE] + [r"\b" + re.escape(n) + r"\b" for n in sorted(attribute)])
     before = re.compile(r"(?:" + marker + r")[^;{}()]*?\b([A-Za-z_]\w*)\s*\(")
-    after = re.compile(r"\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:" + marker + r")\s*[;{]")
+    attribute_group = r"__attribute__\s*\(\((?:[^;{}()]|\([^;{}()]*\))*\)\)"  # `__attribute__((format(printf, 7, 8)))`
+    after = re.compile(r"\b([A-Za-z_]\w*)\s*\([^;{}]*\)\s*(?:" + attribute_group + r"\s*)*?(?:" + marker + r")(?:\s*" + attribute_group
+                       + r")*\s*[;{]")
     names = set()
     for f in files:
         try:

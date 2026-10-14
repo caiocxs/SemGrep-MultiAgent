@@ -395,3 +395,14 @@ def test_macro_that_calls_a_noreturn_function_never_returns(tmp_path):
     assert uaf(graph(tmp_path, src)) == []
 
 
+
+
+def test_noreturn_with_other_attributes_around_it(tmp_path):
+    header = tmp_path / "log.h"
+    header.write_text("void sshfatal(const char *, int, ...) __attribute__((noreturn))\n    __attribute__((format(printf, 2, 3)));\n"
+                      "#define fatal_f(...) sshfatal(__func__, 1, __VA_ARGS__)\n", encoding="utf-8")
+    src = tmp_path / "f.c"
+    src.write_text("int f(char *p) {\n if (p == NULL)\n  fatal_f(\"missing\");\n return *p;\n}\n", encoding="utf-8")
+    conn, failed = extract.build([src], headers=[header])
+    assert failed == []
+    assert [r["line"] for r in paths.null_dereference(conn)] == []

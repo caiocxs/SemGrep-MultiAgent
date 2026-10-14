@@ -332,3 +332,42 @@ the 14 kernel cases of Li et al. (same detection criterion as for the other CWEs
 
 Acceptance: Juliet 416, 415 and 401 unchanged (the new event must not move them); a change is kept only if the development projects do not get worse in total. Expectation written down:
 real code is full of intentional patterns (a test after a macro that dereferences, `p ? p->x : 0`), so a count above 0.1 per KLOC on some project is likely; it is reported as it comes.
+
+### Result of the CWE-476 work (2026-10-14), protocol above
+
+**What was built.** Event `nonnull` (the branch where a pointer is known not NULL: `if (p)`, `p != NULL`, the else of `if (!p)`, the right side of `p && ..`, the right side of
+`||` after a NULL test, the arms of `p ? a : b`, the body of a loop whose condition tests it); a marker on assignments of NULL; calls wrapped around a test (`unlikely(!p)`,
+`BE (p == NULL, 0)`) read as the test; `return p` and arguments handed to calls that are not resolved are no longer dereferences; a callee summary `derefs` (the callee dereferences
+the parameter on a path from its entry where it was not tested, reset or released first), so that `sink(p)` counts only if `sink` dereferences without a guard. **Queries:**
+`null_dereference`, a pointer set or known NULL that is dereferenced on the one path that follows (no decision in between, so no path condition is needed), and `check_after_deref`,
+a dereference followed on the one path that follows by a NULL test of the same pointer, kept apart because its count on real code is far above the limit.
+
+**Three things tried and dropped, in order, on Git, curl and Redis (development).** The path walk of the first version (any path from a NULL to a dereference) gave **11.5 alerts per
+KLOC in Git, 13.1 in curl, 8.4 in Redis**: `T *p = NULL` followed by conditional assignments, `goto error` with a NULL and a guard on another variable at the label. A filter that
+required the NULL to be the only value that could reach the dereference lowered Git to 1.5 and curl to 3.6, still far above 0.1, and cost 36 Juliet cases whose flags live in support
+files (variants 09 to 14). The rule kept is that **no decision may lie between the cause and the effect**: Git **0.035** per KLOC, curl **0.082**, Redis **0.028**, OpenSSL **0.010**.
+
+**Juliet CWE-476 (the 2 C++ `class` cases left out): `null_dereference` 168 of 270 cases (62.2%), 0 false positives; `check_after_deref` 18 of 270 (6.7%), 0.** Found: variants 01 to 08, 15 to 18
+(including the `binary_if` with `&` against `&&`), 21, 22, 41, 51 to 54, and the three of nine of 09 to 14 that need no flag. Not found: 09 to 14 in part (flags in support files),
+31, 32, 34 (copies of the pointer), 44 (function pointer), 45 (static global), 63 to 68 (pointer passed by address across files), 81 and 82 (C++). Juliet 416, 415 and 401 unchanged.
+
+**Real code, total alerts per KLOC, limit 0.1, `null_dereference`.** Development: Git 0.035, curl 0.082, Redis 0.028, OpenSSL 0.010. **Never seen by this query, measured once:** tmux 0.009, PostgreSQL 0.030,
+SQLite 0.039, vim 0.038, libuv 0.010, zlib 0.000, memcached 0.024 (**all pass**) and **OpenSSH 0.907 (fails)**. Reading 12 of its 142 alerts: all one cause, `fatal_f(..)` after a NULL test.
+It is `#define fatal_f(...) sshfatal(..)` with `sshfatal` declared `__attribute__((noreturn)) __attribute__((format(..)))`: the declaration reader did not accept another attribute after
+the `noreturn`. **Fix (general, one regex, one test): the declaration may carry other attributes around `noreturn`.** OpenSSH falls from 142 to 7 alerts (0.045); it is a development project now.
+Side effects, all measured: Juliet 416, 415, 401 and CWE-476 unchanged; use after free and double free unchanged on Git, curl, Redis, OpenSSL; the leak query on **Git 0.103 to 0.070 and OpenSSL 0.069 to 0.043**
+(the NULL tests inside `&&`, `||`, `?:` and loop conditions now reach it too), curl, Redis, tmux, libuv, vim, memcached unchanged; OpenSSH leak 0.153 unchanged. So 12 of 12 projects are under 0.1 for this query, 7 of them never seen by it before the measure.
+`check_after_deref` is not under the limit: 1.7 to 3.3 per KLOC (Git 1338 alerts before the single-path rule, 562 in curl), mostly defensive tests of pointers the contract says are not NULL.
+
+**Direct comparison with the reference papers (their benchmark, the frozen query).**
+| Benchmark | RepoAudit | KNighter | CodeQL | Semgrep | Graph, `null_dereference` (and `check_after_deref`) |
+|---|---|---|---|---|---|
+| Kernel, 14 known cases (recall) | 4/14 | 0 | 0 | 0 | **0/14** (16 alerts in all the contexts, none in a changed file); `check_after_deref` **1/14** (`tw5864`: `vb` dereferenced at line 1400 and tested after, inside the hunk, gone after the fix) with 54 other alerts in changed files |
+| gpac `c6a72c3` (reports) | 77, 10/10 false | 0 | 6345 | 0 | **164** (3801 for `check_after_deref`) |
+| bitlbee `8af06ca` | 374, 8/10 false | 0 | 284 | 1 (0/1 false) | **4** (376) |
+| Linux `drivers/peci` (7 files read) | 3, 3/3 false | 0 | 3 | 0 | 0 (0) |
+Read by one reviewer, no run of the code. **bitlbee: all 4 alerts read, 3 distinct sites, all with a NULL branch that falls through to the dereference**: `if (!(query = jabber_make_packet(..))) { log; xt_free_node(node); }` then
+`jabber_cache_add(ic, query, ..)` twice (the error branch does not return), and `if ((ic = irc_channel_by_name(..)) || (ic = irc_channel_new(..))) {..}` then `ic->set` (counted twice). **gpac: 10 sampled, 7 are
+`GF_SAFEALLOC(p, T)` followed by a dereference with no test** (the macro leaves NULL when the allocation fails: a real CWE-476 on allocation failure that I count as true, a maintainer may call it harmless), 1 is
+`assert(att)` before the dereference (a contract), 1 a macro `NARG_STR(..)` read as a NULL, 1 `if (!ctx->mpd) dasher_setup_mpd(ctx);` where the callee sets the field; so 3 of 10 false by my count, 10 of 10 false if
+allocation failures are not defects. The values for the other tools are those of Table V of the paper as printed (read from a text extraction with scrambled columns, the counts of reports are certain, the labels less so).
