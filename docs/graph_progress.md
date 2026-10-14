@@ -371,3 +371,11 @@ Read by one reviewer, no run of the code. **bitlbee: all 4 alerts read, 3 distin
 `GF_SAFEALLOC(p, T)` followed by a dereference with no test** (the macro leaves NULL when the allocation fails: a real CWE-476 on allocation failure that I count as true, a maintainer may call it harmless), 1 is
 `assert(att)` before the dereference (a contract), 1 a macro `NARG_STR(..)` read as a NULL, 1 `if (!ctx->mpd) dasher_setup_mpd(ctx);` where the callee sets the field; so 3 of 10 false by my count, 10 of 10 false if
 allocation failures are not defects. The values for the other tools are those of Table V of the paper as printed (read from a text extraction with scrambled columns, the counts of reports are certain, the labels less so).
+
+## Protocol: CWE-476 on the Linux kernel subsystems of the reference papers (written on 2026-10-14 **before** the run)
+
+The queries are the ones at `2d79aeb` (no change allowed). Linux `6093a68`, subsystems `mm`, `sound`, `net`, `drivers/net` (the ones Li et al. and RepoAudit analysed), query `null_dereference`
+(and `check_after_deref` counted apart). Reports = alerts over all files of the directory; a sample of up to 10 per subsystem, every k-th in path and line order, read by one reviewer without running the code,
+true positive = a NULL that reaches a dereference on the path the alert names, in the code as it stands (a dereference after an allocation with no test counts as true and is marked as such, as for gpac).
+Compared with RepoAudit (333 reports for `sound`, 356 for `mm`, 3 for `net`, 1 for `drivers/net`, all sampled alerts false except where the paper says otherwise) and KNighter (6, 3, 12, 79). CWE-401 and CWE-416
+stay blind on the kernel and are not run. If a subsystem cannot be extracted (time or memory) that is reported.
