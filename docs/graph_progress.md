@@ -443,3 +443,20 @@ Real-code counts of `check_after_deref` were measured before the fix and are low
 **22 (31%)**; `valid-memcleanup` false (36): 0 (that property also counts what is still allocated at exit, which the leak query does not report).
 Reading: on programs written to stress verifiers the arm is **quiet on safe programs (3.4%, none for the three pointer-validity queries)** and **finds a small part of the violations** (a `valid-deref` violation is mostly an out-of-bounds access, an uninitialized pointer or pointer
 arithmetic, none of which is a NULL or freed pointer; the arm has no queries for those). The two numbers say it trades recall for silence, as on real code.
+
+## Protocol: the model writes the rule from the graph's findings (written on 2026-10-14 **before** the run)
+
+Question: if the generator is shown the real alerts of the event-graph analysis instead of the findings of a language model, does a local model write a Semgrep rule that passes the gate (Juliet on held-out variants,
+no false positives, and at most 0.1 alerts per KLOC on the Git sources)? The graph writes no rule; it plays the role the detector played (`python -m src.graph.export_findings --cwe CWE-416`: 206 findings over the 300 CWE-416
+files, written as `log_<file>.json` with the pointer, the two lines and a description of the path), and `synthesize --example-mode graph` shows three of them, as it showed three findings of the detector. Generator, corrector, gate, folds and
+real-world files are unchanged.
+
+Conditions, CWE-416, template format, 5-fold cross-validation by variant, seeds 1 and 2 (the same folds and the same Git files as the runs they are paired with):
+- `graph4b`: combo C (Qwen3-4B), against the `qwen4b` run (detector findings; recall 30.0%, rules that match nothing in 7 of 10 folds, 0 accepted).
+- `graph`: combo D (Qwen3-Coder-30B), against B0 (detector findings; 25-fold recall 75.8%, 2.92 alerts per KLOC, 0 accepted).
+Paired comparison with `python -m src.pipeline.compare`, the criterion of `docs/ablation_plan.md` (bootstrap interval over folds, a difference of at least 0.10 for an effect); the number of accepted folds is reported whatever the interval says.
+
+What would count as a result: the 4B writing rules that detect (recall well above 30%) with the same findings quality as the 30B; the 30B lowering the real-world alerts below its 2.5 per KLOC, or having accepted folds with more than the narrow recall of `pairs`.
+Two things to read it with, written down now: (1) the findings are better than the detector's (0 false positives in the safe functions against 34% on the safe files for the 3B detector) and give exact lines, so any effect is the effect of the findings' quality, not a new kind of help;
+(2) the description of a finding says "released at line a and used at line b on a path with no new value", which is the strategy of the template, so the arm is the template arm and is reported with it, apart from the free-form YAML arm. A free-form arm (`--format yaml`) with the graph findings
+is the next step only if this one shows an effect.

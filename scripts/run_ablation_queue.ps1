@@ -47,6 +47,9 @@ $experiments = [ordered]@{
     guard        = @{ Combo = "D"; Extra = @("--guard") }
     apis         = @{ Combo = "D"; Extra = @("--project-apis") }
     guardapis    = @{ Combo = "D"; Extra = @("--guard", "--project-apis") }
+    # the generator is shown the alerts of the event-graph analysis (python -m src.graph.export_findings --cwe CWE-416 first), docs/graph_progress.md
+    graph4b      = @{ Combo = "C"; Extra = @("--example-mode", "graph"); Ram = 6 }
+    graph        = @{ Combo = "D"; Extra = @("--example-mode", "graph") }
 }
 
 # "-Only a,b" arrives as one string when the script is started with `powershell -File`: split it.

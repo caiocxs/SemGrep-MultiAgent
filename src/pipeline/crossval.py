@@ -191,7 +191,7 @@ def main():
     parser.add_argument("--history", action="store_true")
     parser.add_argument("--critic", action="store_true")
     parser.add_argument("--merge", action="store_true")
-    parser.add_argument("--example-mode", choices=("findings", "pairs", "none"), default="findings")
+    parser.add_argument("--example-mode", choices=("findings", "graph", "pairs", "none"), default="findings")
     parser.add_argument("--no-diagnosis", action="store_true")
     parser.add_argument("--guard", action="store_true")
     parser.add_argument("--project-apis", action="store_true")

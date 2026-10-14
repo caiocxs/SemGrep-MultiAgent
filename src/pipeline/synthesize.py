@@ -119,6 +119,9 @@ def _score(attempt):
     return (1, int(attempt.get("passed", False)), int(bool(report.detected_cases)), _f1(report), -alerts)
 
 
+GRAPH_LOGS = Path("logs/graph")  # where `python -m src.graph.export_findings` writes the alerts of the event-graph analysis
+
+
 def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, n_examples=3,
                min_recall=0.5, test_ratio=0.3, seed=0, rules_dir=Path("rules"),
                logs_dir=Path("logs/synthesis"), max_fix_attempts=None, output_format="yaml",
@@ -175,7 +178,7 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
     }
     if output_format not in formats:
         raise ValueError(f"Unknown output format: {output_format}")
-    if example_mode not in ("findings", "pairs", "none"):
+    if example_mode not in ("findings", "graph", "pairs", "none"):
         raise ValueError(f"Unknown example mode: {example_mode}")
     spec_mode = output_format != "yaml"  # the model answers in JSON, not YAML
     generator_template, corrector_template, parse = formats[output_format]
@@ -206,6 +209,10 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
             raise RuntimeError(f"No C files for the train side in {negatives}.")
     rate_limit = max_negative_rate if negatives else None
 
+    if example_mode == "graph":  # the alerts of the event-graph analysis (python -m src.graph.export_findings) instead of the language model's findings
+        log_dirs = [GRAPH_LOGS / cwe.lower().replace("-", "_")]
+        if not log_dirs[0].is_dir():
+            raise RuntimeError(f"No graph findings in {log_dirs[0]}: run python -m src.graph.export_findings --cwe {cwe} first.")
     findings = load_findings(log_dirs, train_bad + train_good, cwe)
     examples = select_examples(findings, n_examples, seed)
     if not examples:
@@ -233,7 +240,7 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         + (f" | real-world code: train {len(train_neg)} / test {len(test_neg)} files" if negatives else "") + "\n"
     )
 
-    if example_mode == "findings":
+    if example_mode in ("findings", "graph"):
         examples_text = "\n\n".join(render_example(f, i) for i, f in enumerate(examples, start=1))
         shown_examples = [str(f.file) for f in examples]
     elif example_mode == "pairs":
@@ -438,7 +445,7 @@ def main():
     parser.add_argument("--history", action="store_true", help="Show the corrector a summary of the earlier attempts")
     parser.add_argument("--critic", action="store_true", help="Add a critic agent that reviews each tested rule for the corrector")
     parser.add_argument("--merge", action="store_true", help="Add a final attempt that merges the best and the quietest rule")
-    parser.add_argument("--example-mode", choices=("findings", "pairs", "none"), default="findings",
+    parser.add_argument("--example-mode", choices=("findings", "graph", "pairs", "none"), default="findings",
                         help="What the generator is shown: the detector's findings, vulnerable/safe file pairs, or nothing")
     parser.add_argument("--no-diagnosis", action="store_true",
                         help="Turn off the structural diagnoses in the gate feedback (to compare them with --critic)")
