@@ -107,3 +107,11 @@ Reading: on the kernel, where all 50 of the in-house cases and four of the six r
 kernel does not call `malloc` or `free`; on the two C projects it can read, it raises more reports than any reference tool and its sampled alerts are as
 wrong as theirs (0 of 20 real before the fix). After one general fix found by reading that sample, ImageMagick drops to 65 reports and 3 of 10 sampled look real
 (error-path leaks); that number is not independent. The earlier "under 0.1 alerts per KLOC" results do not predict the sampled precision, as stated before.
+
+### CWE-476 (added 2026-10-14)
+
+The graph arm now has a null dereference query (`docs/graph_progress.md`, "Result of the CWE-476 work"). On their benchmark: kernel, 14 known cases, **0 of 14** (RepoAudit 4/14, the others 0);
+the secondary query `check_after_deref` finds 1 of 14 (the `tw5864` fix) with 54 other alerts in the changed files. gpac: 164 reports (RepoAudit 77, CodeQL 6345); bitlbee: **4 reports, all read, three
+distinct sites with a NULL branch that falls through to the dereference** (RepoAudit 374 with 8 of 10 sampled false, CodeQL 284, Semgrep 1); `drivers/peci`: 0. On gpac 7 of 10 sampled alerts are allocations
+dereferenced with no test (`GF_SAFEALLOC`), which I count as true and a maintainer may not. On the other benchmarks of the arm the query passes the 0.1 alerts per KLOC limit in 12 of 12 projects, 7 of them never
+seen by it, after one general fix found on OpenSSH (a `noreturn` declaration with a second attribute): reading that failure (0.907) is how the fix was found, so OpenSSH is development for this query.
