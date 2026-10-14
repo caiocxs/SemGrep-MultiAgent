@@ -400,3 +400,20 @@ a `for_each_pci_dev(tdev)` loop macro that assigns `tdev`, two correlated condit
 (`htc_proc_trailer` tests `next_lk_ahds` before it uses `n_lk_ahds`), and in `net` one correlated condition, one `struct_size`, one loop macro. **So 1 of 12 true (sampled false discovery rate 92%) on 7035 files, 12 reports against the hundreds
 that the reference tools give on the same subsystems for the memory-related CWEs**; the reference papers did not run CWE-476 on these four subsystems, only on `drivers/peci`, so there is nothing to compare these counts with directly.
 Whether the arm "finds something new" on the kernel: at this commit it found one real defect that is already fixed, and nothing that is still there; to look for new ones the same run has to be repeated on the current master.
+
+## Protocol: false positives on SV-COMP memory-safety tasks (written on 2026-10-14 **before** any measurement)
+
+Why: so far the false positive rate of the arm was measured on real code assumed correct (alerts per KLOC) and on samples of ten alerts read by one person. SV-COMP (`sv-benchmarks`, `gitlab.com/sosy-lab/benchmarking/sv-benchmarks`,
+head `c7d7c3e`) has C programs with an **expected verdict decided by verifiers**: a `true` program has no memory-safety violation on any execution, so any alert on it is a false alert, counted without anybody reading it.
+
+Data: the 510 tasks with a `valid-*` property in the directories `memsafety*`, `ldv-memsafety`, `list*-properties`, `heap-manipulation`, `forester-heap`, `ddv-machzwd`, `list-simple`, `ldv-regression`, `ldv-sets`, `heap-data`, `memory-alloca`:
+268 `valid-memsafety` true; false with sub-property `valid-deref` 115, `valid-free` 18, `valid-memtrack` 71; `valid-memcleanup` 36 false and 2 true. 442 of the files are preprocessed `.i`.
+
+Queries, frozen at `abf3004` (no change during the experiment): `null_dereference`, `use_after_free`, `double_free`, `memory_leak`; `check_after_deref` is run and reported apart. Each task is built alone (its input files, no headers,
+only the C standard library known), the extractor as it is.
+- **False positive rate**: share of the 268 safe tasks with at least one alert of any of the four queries, and per query; the alerts of 20 flagged tasks (every k-th in path order) are read and the cause named.
+- **Recall at task level** (no location is given, so an alert anywhere in the task counts, which is generous): `valid-deref` violations by `null_dereference` or `use_after_free` (an invalid dereference includes a use after free), `valid-free` by `double_free`,
+  `valid-memtrack` by `memory_leak`; per query and as the union. `valid-memcleanup` (also reports what is still allocated at exit, a stricter property) is reported apart.
+- Files that fail to parse are listed. An alert in a false task of another sub-property is not counted either way.
+Expectation written down: the tasks are small and written to stress verifiers (nondeterministic branches, pointer arithmetic, aliasing through arrays and lists, `__VERIFIER_*` calls), so a path-insensitive arm should flag a
+fair share of the safe tasks and miss many violations; the point is the number, not a target.
