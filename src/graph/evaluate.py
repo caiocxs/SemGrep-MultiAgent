@@ -55,7 +55,7 @@ def main():
     parser.add_argument("--bad", nargs="+", required=True)
     parser.add_argument("--good", nargs="*", default=[])
     parser.add_argument("--filter", default="*")
-    parser.add_argument("--query", choices=("use_after_free", "double_free", "memory_leak"), default="use_after_free")
+    parser.add_argument("--query", choices=("use_after_free", "double_free", "memory_leak", "null_dereference", "check_after_deref"), default="use_after_free")
     parser.add_argument("--negatives", default=None, help="Real-world code assumed correct (e.g. ../git)")
     parser.add_argument("--show-missed", action="store_true")
     parser.add_argument("--exclude", default=None, help="Regex on file names to leave out (e.g. the C++ cases of Juliet)")

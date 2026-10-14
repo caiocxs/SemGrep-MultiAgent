@@ -82,6 +82,8 @@ BIG_RECURSION = 60000        # recursion limit while a file is walked (nested ex
 BIG_STACK = 256 * 1024 * 1024  # stack of the thread that walks it (smaller sizes are tried if the system refuses it)
 ENTRY, RETURN, END, NORETURN = "<entry>", "<return>", "<end>", "<noreturn>"  # details of the marker events of a function
 SCOPE_END = "<scope-end>"  # detail of the reset that marks a variable going out of scope (a pointer still holding an allocation leaks there)
+ARG_USE = "<arg>"  # detail of a `use` that is an argument handed to a call that is not resolved (not a dereference)
+NULL_ASSIGN = "<null-assign>"  # detail of the reset that assigns NULL (`p = NULL`, `T *p = NULL`): a source of the null dereference query
 REALLOC_SELF = "<realloc-self>"  # detail of `p = realloc(p, n)`: the old block is lost if the call fails
 ARENA_FACTOR = 3.0       # an allocator whose own sites are flagged as leaks this many times as malloc's (and 15%) is an arena's, not an owner's
 ARENA_FLOOR = 0.15
@@ -103,6 +105,23 @@ def _strip(node):
     while node is not None and node.type in ("parenthesized_expression", "cast_expression"):
         node = node.child_by_field_name("value") if node.type == "cast_expression" else (
             node.named_children[0] if node.named_children else None)
+    return node
+
+
+def _is_null_literal(node):
+    node = _strip(node)
+    return node is not None and _text(node) in ("NULL", "0", "nullptr")
+
+
+def _hinted_test(node):
+    """`unlikely(!p)`, `BE (p == NULL, 0)`: a call that wraps a comparison with NULL or a negation as its first argument is read as the comparison."""
+    node = _strip(node)
+    if node is not None and node.type == "call_expression":
+        arguments = node.child_by_field_name("arguments")
+        first = _strip(arguments.named_children[0]) if arguments is not None and arguments.named_children else None
+        if first is not None and (first.type == "binary_expression" or (first.type == "unary_expression" and first.children
+                                                                         and first.children[0].type == "!")):
+            return first
     return node
 
 
@@ -220,6 +239,18 @@ class _Function:
             self.expr(argument)
             if n.children and n.children[0].type == "*":
                 self.use(path_of(argument), n)
+        elif t == "binary_expression" and _text(n.child_by_field_name("operator") or n) in ("&&", "||"):
+            left = n.child_by_field_name("left")
+            self.expr(left)
+            self._tested(left, _text(n.child_by_field_name("operator")) == "&&")  # the right side runs only when the left decided so
+            self.expr(n.child_by_field_name("right"))
+        elif t == "conditional_expression":
+            condition = n.child_by_field_name("condition")
+            self.expr(condition)
+            self._tested(condition, True)
+            self.expr(n.child_by_field_name("consequence"))
+            self._tested(condition, False)
+            self.expr(n.child_by_field_name("alternative"))
         else:
             for child in n.named_children:
                 self.expr(child)
@@ -337,7 +368,8 @@ class _Function:
         self._escapes(right, path)
         if path:
             same = self._realloc_first(right) == path
-            eid = self.event("alloc" if self._allocates(right) else "reset", path, n, detail=REALLOC_SELF if same else None)
+            eid = self.event("alloc" if self._allocates(right) else "reset", path, n,
+                             detail=REALLOC_SELF if same else (NULL_ASSIGN if _is_null_literal(right) else None))
             self._acquire(eid, right, path)
             if left.type == "identifier":
                 self.track(path, right)
@@ -374,15 +406,15 @@ class _Function:
                 self.event("free", path_of(args[0]), n)
             return
         if name in ALLOC_FUNCTIONS:
-            if name == "realloc" and args:
-                self.use(path_of(args[0]), n)
+            if name == "realloc" and args and path_of(args[0]):
+                self.event("use", path_of(args[0]), n, detail=ARG_USE)  # realloc(NULL, n) is legal
             return
         for index, arg in enumerate(args):
             path = path_of(arg)
             if not path:
                 continue
             if name is None:
-                self.event("use", path, n)
+                self.event("use", path, n, detail=ARG_USE)
             else:
                 eid = self.event("call", path, n)
                 self.x.call_args.append((eid, name, index, path, 0))
@@ -515,7 +547,7 @@ class _Function:
                     self.plain.discard(name)
                 else:
                     self.plain.add(name)
-                eid = self.event(kind, name, declarator)
+                eid = self.event(kind, name, declarator, detail=NULL_ASSIGN if _is_null_literal(value) else None)
                 if value is not None:
                     self._acquire(eid, value, name)
                 self.track(name, value)
@@ -570,7 +602,7 @@ class _Function:
                 return path_of(node.child_by_field_name("left"))
             return path_of(node)
 
-        cond = _strip(condition)
+        cond = _hinted_test(condition)
         if cond is None:
             return None
         if cond.type == "unary_expression" and cond.children and cond.children[0].type == "!":
@@ -624,6 +656,36 @@ class _Function:
             return [], []
         return ([test[0]], []) if test[1] else ([], [test[0]])
 
+    @classmethod
+    def _nonnull_facts(cls, condition):
+        """(paths not NULL whenever the condition is true, paths not NULL whenever it is false); only what short-circuit evaluation makes certain."""
+        cond = _hinted_test(condition)
+        if cond is not None and cond.type == "binary_expression":
+            operator = cond.child_by_field_name("operator")
+            if operator is not None and _text(operator) in ("&&", "||"):
+                lt, lf = cls._nonnull_facts(cond.child_by_field_name("left"))
+                rt, rf = cls._nonnull_facts(cond.child_by_field_name("right"))
+                return (lt + rt, []) if _text(operator) == "&&" else ([], lf + rf)
+        test = cls._null_test(cond)
+        if not test:
+            return [], []
+        return ([], [test[0]]) if test[1] else ([test[0]], [])
+
+    def _tested(self, condition, outcome):
+        """Events for what the condition being true (`outcome` True) or false says about NULL, emitted on the branch that follows."""
+        nulls = self._null_facts(condition)[0 if outcome else 1]
+        nonnulls = self._nonnull_facts(condition)[0 if outcome else 1]
+        for path in nulls:
+            self.event("null", path, condition)
+        for path in nonnulls:
+            self.event("nonnull", path, condition)
+
+    def _entered(self, condition):
+        """The body of a loop runs with the pointers its condition tests known not to be NULL (`for (t = first; t; t = t->next)`)."""
+        if condition is not None:
+            for path in self._nonnull_facts(condition)[0]:
+                self.event("nonnull", path, condition)
+
     def s_if_statement(self, n):
         condition = n.child_by_field_name("condition")
         self.expr(condition)
@@ -633,15 +695,12 @@ class _Function:
             if branch is not None:
                 self.stmt(branch)
             return
-        when_true, when_false = self._null_facts(condition)
         entry = set(self.frontier)
-        for path in when_true:  # the consequence runs with the pointer NULL
-            self.event("null", path, condition)
+        self._tested(condition, True)  # the consequence runs with the pointer NULL (or not NULL)
         self.stmt(n.child_by_field_name("consequence"))
         after_then = set(self.frontier)
         self.frontier = entry
-        for path in when_false:  # the other side, also when there is no else, runs with the pointer NULL
-            self.event("null", path, condition)
+        self._tested(condition, False)  # the other side, also when there is no else
         alternative = n.child_by_field_name("alternative")
         if alternative is not None:
             self.stmt(alternative)
@@ -661,6 +720,7 @@ class _Function:
         condition = n.child_by_field_name("condition")
         self.expr(condition)
         exits = set(self.frontier) if self._exit_when(condition) else set()
+        self._entered(condition)
         ctx = self._loop_body(n.child_by_field_name("body"))
         for src in set(self.frontier) | ctx["continues"]:
             self.x.flow.append((src, head))
@@ -704,6 +764,7 @@ class _Function:
         if condition is not None:
             self.expr(condition)
         exits = set(self.frontier) if self._exit_when(condition) and not once else set()
+        self._entered(condition)
         ctx = self._loop_body(n.child_by_field_name("body"))
         self.frontier = set(self.frontier) | ctx["continues"]
         update = n.child_by_field_name("update")
@@ -798,7 +859,8 @@ class _Function:
     def s_return_statement(self, n):
         for child in n.named_children:
             self.expr(child)
-            self.use(path_of(child), child)
+            if path_of(child):
+                self.event("use", path_of(child), child, detail=ARG_USE)  # returning a pointer is a use for use after free, not a dereference
             held = path_of(child)
             stripped = _strip(child)
             handed = held
@@ -1441,6 +1503,45 @@ def _summarize(conn, params, inferred):
                     stack.append(nxt)
         return True
 
+    call_ids = {r[0] for r in conn.execute("SELECT call_event FROM call_args")}
+    deref_call_ids = set()
+
+    def unguarded_derefs():
+        """(function, parameter) pairs the function dereferences on a path from its entry where the parameter was not tested against NULL, given a
+        new value or released first. Dereferences count when direct (`p->x`, `*p`, `p[i]`) or when handed to a callee that dereferences it."""
+        direct, guards = {}, {}
+        for event_id, func_id, var, kind, detail in conn.execute(
+                "SELECT id, func_id, var, kind, detail FROM events WHERE kind IN ('use', 'nonnull', 'reset', 'alloc', 'free')"):
+            idx = params.get(func_id, {}).get(var)
+            if idx is None:
+                continue
+            if kind == "use":
+                if (event_id in call_ids and event_id in deref_call_ids) or (event_id not in call_ids and detail != ARG_USE):
+                    direct.setdefault((func_id, idx), set()).add(event_id)
+            else:
+                guards.setdefault((func_id, idx), set()).add(event_id)
+        found = set()
+        for (func_id, idx), ids in direct.items():
+            entry, out, _ = flow_of(func_id)
+            if entry is None:
+                continue
+            blocked = guards.get((func_id, idx), set())
+            if entry in ids:
+                found.add((func_id, idx, 0, "derefs"))
+                continue
+            seen, stack = {entry}, [entry]
+            while stack and (func_id, idx, 0, "derefs") not in found:
+                node = stack.pop()
+                for nxt in out.get(node, ()):
+                    if nxt in seen or nxt in blocked:
+                        continue
+                    if nxt in ids:
+                        found.add((func_id, idx, 0, "derefs"))
+                        break
+                    seen.add(nxt)
+                    stack.append(nxt)
+        return found
+
     def summaries():
         effects = set()
         frees = {}
@@ -1459,12 +1560,17 @@ def _summarize(conn, params, inferred):
             idx = params.get(func_id, {}).get(name)
             if idx is not None:
                 effects.add((func_id, idx, 1, {"free": "frees", "use": "uses", "reset": "resets"}[kind]))
-        return effects
+        return effects | unguarded_derefs()
 
     calls = conn.execute("SELECT call_event, callee_id, arg_index, addr, callee_name FROM call_args").fetchall()
     for _ in range(MAX_SUMMARY_ROUNDS):
         effects = summaries()
         changed = 0
+        now = {event_id for event_id, callee, index, addr, name in calls
+               if callee is not None and not addr and (callee, index, 0, "derefs") in effects}
+        changed += len(now ^ deref_call_ids)
+        deref_call_ids.clear()
+        deref_call_ids.update(now)
         for event_id, callee, index, addr, name in calls:
             if callee is not None and (callee, index, addr, "resets") in effects:
                 kind = "reset"  # the callee assigns *param: after the call p holds another value (e.g. a pop of a list head)
@@ -1484,7 +1590,9 @@ def _summarize(conn, params, inferred):
         if not changed:
             break
     conn.execute("DELETE FROM summaries")
-    conn.executemany("INSERT INTO summaries (func_id, param, deref, effect) VALUES (?, ?, ?, ?)", sorted(summaries()))
+    conn.executemany("INSERT INTO summaries (func_id, param, deref, effect) VALUES (?, ?, ?, ?)", sorted(e for e in summaries() if e[3] != "derefs"))
+    conn.execute("DELETE FROM deref_calls")
+    conn.executemany("INSERT INTO deref_calls VALUES (?)", [(i,) for i in sorted(deref_call_ids)])
     conn.commit()
 
 

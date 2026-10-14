@@ -23,13 +23,14 @@ CREATE TABLE IF NOT EXISTS functions (
 --       call   an argument of a call, until the callee is resolved (see call_args); afterwards free, use or join
 --       escape the pointer is copied into something else (`return p`, `x = p`, `s->f = p`, `*out = p`): it is held elsewhere now
 --       null   the pointer is known to be NULL on this branch (`if (!p)`, `p == NULL`, the else of `if (p)`)
+--       nonnull the pointer is known not to be NULL on this branch (`if (p)`, `p != NULL`, the else of `if (!p)`, the right side of `p && ..`)
 --       join   no effect: a merge point of the flow (loop heads, labels, cases) or a call that touches nothing
 -- var is the access path as text ("p", "ctx->buf"); it is scoped by function.
 CREATE TABLE IF NOT EXISTS events (
     id      INTEGER PRIMARY KEY,
     func_id INTEGER NOT NULL REFERENCES functions(id),
     line    INTEGER NOT NULL,
-    kind    TEXT NOT NULL CHECK (kind IN ('alloc', 'free', 'use', 'reset', 'call', 'join', 'escape', 'null')),
+    kind    TEXT NOT NULL CHECK (kind IN ('alloc', 'free', 'use', 'reset', 'call', 'join', 'escape', 'null', 'nonnull')),
     var     TEXT,
     detail  TEXT                      -- the source text of the statement, shown to the judge
 );
@@ -42,6 +43,11 @@ CREATE TABLE IF NOT EXISTS flow (
     PRIMARY KEY (src, dst)
 );
 CREATE INDEX IF NOT EXISTS flow_by_src ON flow(src);
+
+-- Calls whose callee dereferences the argument on some path where it was not tested against NULL first (the null dereference query counts those as dereferences).
+CREATE TABLE IF NOT EXISTS deref_calls (
+    call_event INTEGER PRIMARY KEY
+);
 
 -- Aliases the extractor could prove in one function (q = p): a free of p also frees q until either is reset.
 CREATE TABLE IF NOT EXISTS aliases (
