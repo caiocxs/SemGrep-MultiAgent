@@ -311,3 +311,24 @@ ImageMagick falls from **454 to 65 reports** (0.119 train / 0.158 test alerts pe
 reference returned by a getter, a pointer handed to the image (`SetImageProfilePrivate`), a free guarded by `program_name != program_invocation_name`, a free in every
 other case of a `switch`, a macro that frees `map` (`RelinquishNodesAndMap`), and two alerts with a hit before the allocation that look like an artifact of the
 extractor. **ImageMagick is a development project for this version** (its alerts were read twice), so the 70% is a hint, not an independent measure.
+
+## Protocol: CWE-476, null pointer dereference, in the graph arm (written on 2026-10-13 **before** the change)
+
+Why now: it is the third CWE of the reference papers, the one where RepoAudit has its best real recall (4 of 14 kernel cases) and where **the arm is not blind
+on the kernel**, because a NULL source needs no allocator or release function to be learned.
+
+Query `null_dereference` (two patterns, both intraprocedural and over the same graph):
+1. **Null source to dereference:** a `p = NULL` (also `T *p = NULL`) or a branch known NULL (`if (!p)`, `p == NULL`) from which a `use` of `p` (a dereference: `p->x`, `*p`, `p[i]`,
+   or a callee that dereferences its parameter) is reachable with no new value, no allocation and no **non-NULL test** of `p` in between.
+2. **Dereference before the test:** a `use` of `p` from which a NULL test of `p` is reachable with no new value in between (the dereference-then-check pattern).
+
+Extractor changes, all general: a new event `nonnull` on the branch where `p` is known non-NULL (`if (p)`, `p != NULL`, the else of `if (!p)`), also inside `&&` and `||` after the
+left operand (`p != NULL && p->x`); an explicit marker on assignments of NULL. The new event is a pass-through for the existing queries.
+
+Development: Juliet CWE-476 (386 BAD, with `data = NULL`, `deref_after_check`, `null_check_after_deref`, `binary_if` with `&`; the 2 C++ `class` cases left out), scored like the
+other CWEs (a hit in a `*bad*` function, a false positive in a `*good*` one); Git, curl, Redis and OpenSSL for the real-code side (alerts per KLOC, limit 0.1, train/test by file hash).
+Frozen after that, measured once: tmux, PostgreSQL, SQLite, vim, libuv, OpenSSH, zlib, memcached (none of their NULL alerts has been read), then the reference benchmarks:
+the 14 kernel cases of Li et al. (same detection criterion as for the other CWEs) and their CWE-476 projects (gpac, bitlbee; `drivers/peci` if it can be read), with 10 sampled alerts read per project.
+
+Acceptance: Juliet 416, 415 and 401 unchanged (the new event must not move them); a change is kept only if the development projects do not get worse in total. Expectation written down:
+real code is full of intentional patterns (a test after a macro that dereferences, `p ? p->x : 0`), so a count above 0.1 per KLOC on some project is likely; it is reported as it comes.
