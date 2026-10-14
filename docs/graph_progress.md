@@ -245,3 +245,35 @@ overstates the number of independent mistakes); one more pair of projects never 
 piece removes on the development projects; the fix commits of curl, Redis, OpenSSL and PostgreSQL with the learned names; the other CWEs with
 the same events (leak, null dereference, uninitialized use); pointers derived from freed objects; telling a conditional free that depends on
 a flag (variants 21 and 22 of CWE-415) from one that depends on an error.
+
+## Protocol: direct comparison on the benchmarks of the reference papers (written on 2026-10-13 **before** any measurement)
+
+Purpose: put the graph arm on the same data that Li et al. (arXiv 2601.19239) used for RepoAudit, KNighter, CodeQL and Semgrep, so that the
+comparison is on one benchmark and not on numbers of different kinds. Data: their replication package (`Feng-Jay/LLM4Security`, commit
+`122e915`). The queries are the ones frozen at `6bc9e39`: **no change to the extractor or the queries during this experiment**; anything changed
+afterwards is reported as a new version, not folded into this result.
+
+**A. In-house benchmark (known vulnerabilities, recall).** `data/in_house/c/linux_check_table.csv`: 40 CWE-401, 10 CWE-416 and 14 CWE-476 Linux kernel
+cases, the vulnerable version being the parent of the fix commit.
+- Queries: CWE-401 `memory_leak`, CWE-416 `use_after_free`. CWE-476 has **no query** in the graph arm, so its 14 cases are reported as not covered (0 by
+  construction), not tuned for.
+- Unit: the case. Graph built from the `.c` files changed by the fix plus, for the learned names (allocators, release functions) that need project
+  statistics, all `.c` and `.h` files of the directories of those files at the parent commit.
+- Detected: at least one alert of the query in a changed file within 10 lines of a hunk (old line numbers), the criterion of `fixcommits.py`. Also reported:
+  exact (the alert inside the hunk), file-level (any alert in a changed file) and noise (alerts of the query in changed files that are not near a hunk).
+  For detected cases the query is also run on the fixed version: an alert near the hunk that disappears is "fix-sensitive".
+- Their criterion is that the tool reports the labelled vulnerable program point; the 10-line window is looser, which favours us, and is said where the
+  numbers are compared. Their reference: RepoAudit 22/40 (55.0%) on 401 and 1/10 on 416; KNighter, CodeQL and Semgrep 0.
+
+**B. Real-world projects (reports and sampled false discovery rate).** Table III/V of the paper, C projects, at their commits: Linux `6093a68`
+(`sound`, `mm` for CWE-401; `net`, `drivers/net` for CWE-416), ImageMagick `3bf1076` (CWE-401), vim `8feaa94` (CWE-416). The CWE-476 projects (`peci`,
+`gpac`, `bitlbee`) are not covered for the same reason as above.
+- Reports = alerts of the query over all files of the project (directory for the kernel). Sample: up to 10 alerts per project, every k-th in path and
+  line order (no choice by hand), read by one reviewer with the surrounding code and, when needed, the called functions; true positive = a real memory
+  leak or use after free in the code as it stands; sampled false discovery rate = false positives / sampled, the paper's definition.
+- The reviewer is the author of the extractor and reads without running the code; same limits as the paper's two authors, one person fewer.
+- If a project cannot be extracted (time or memory), that is reported as such.
+
+**What would count as a result.** Recall on A against 55% / 10% (RepoAudit) and 0 (the others); reports and SFDR on B against their Table V (RepoAudit:
+333, 356 and 348 reports for sound, mm and ImageMagick, all sampled alerts false; 3, 1 and 32 for the CWE-416 projects). A result worse than the reference
+is reported as such.
