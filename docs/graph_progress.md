@@ -379,3 +379,24 @@ The queries are the ones at `2d79aeb` (no change allowed). Linux `6093a68`, subs
 true positive = a NULL that reaches a dereference on the path the alert names, in the code as it stands (a dereference after an allocation with no test counts as true and is marked as such, as for gpac).
 Compared with RepoAudit (333 reports for `sound`, 356 for `mm`, 3 for `net`, 1 for `drivers/net`, all sampled alerts false except where the paper says otherwise) and KNighter (6, 3, 12, 79). CWE-401 and CWE-416
 stay blind on the kernel and are not run. If a subsystem cannot be extracted (time or memory) that is reported.
+
+### Result of CWE-476 on the whole kernel subsystems (2026-10-14), protocol above
+
+Run on the whole directories, Linux `6093a68`: `mm` (160 files), `sound` (1842), `net` (1528), `drivers/net` (3505), with the kernel's `include/` and `arch/x86/include/` read for `#define`s.
+**Five runs, each changed only after reading the alerts of the one before** (so the first is the frozen one and the last is development for the kernel):
+| Run | mm | sound | net | drivers/net | What was read and changed |
+|---|---|---|---|---|---|
+| 1, no kernel headers | 6 | 7 | 35 | 70 | 6 of 7 `sound` alerts were `cont ? cont->size : 0` followed by `cont->size`: a `null` event inside a conditional expression stayed on the path to the next statement (a bug of mine, the same for `a && b`); `panic()` and `for_each_*` unknown without the headers |
+| 2, + `include/`, expression tests give non-NULL facts only | 14 | 0 | 31 | 48 | 12 of the 14 `mm` alerts were a macro's own temporary (`tl` in `local_trylock`) with source and dereference on one line; `typeof(*p)` counted as a dereference |
+| 3, + `typeof`/`offsetof` unevaluated, one-line pairs dropped | 0 | 0 | 28 | 48 | 5 of the `net` alerts were `skb = NULL; ... dev_kfree_skb(skb)` (the callee tolerates NULL through an inline function in a header); `&rt->dst` taken for a dereference; two functions merged by a parse error |
+| 4, `&p->f` tagged as an address, a call to an unknown function before the dereference counts as a possible guard, functions with parse errors skipped | 0 | 0 | 3 | 40 | 29 of the 40 `drivers/net` alerts were `u32 x = 0; SET_FIELD(x, ..)`: a plain `0` taken for NULL |
+| 5, `0` is NULL only for a local declared with a `*` | 0 | 0 | **3** | **9** | all read |
+All five general fixes, with tests (111 graph tests), left the Juliet numbers (416, 415, 401, 476) unchanged and the development projects not worse (Git 0.028 / 0.036, curl 0.016 / 0.000, Redis 0.013 / 0.000, OpenSSL 0.010 / 0.004,
+tmux 0.000, OpenSSH 0.022 / 0.031 per KLOC for `null_dereference`; use after free and leak unchanged).
+
+**The 12 alerts left, all read (one reviewer, no run):** **1 true: `sxgbe_rx` in `drivers/net/ethernet/samsung/sxgbe/sxgbe_main.c`**: `if (unlikely(!skb)) netdev_err(..); prefetch(skb->data - ..);`, the error branch does not leave. In the
+current kernel master (`4056b3c9d3c9`) that branch has a `break;`, so it was a real defect that has since been fixed. The other 11 are false: three `struct_size(p, ..)` where `p` was NULL (a size macro that the extractor still evaluates),
+a `for_each_pci_dev(tdev)` loop macro that assigns `tdev`, two correlated conditions (`hs_activate` is true exactly when `hscfg_param` is NULL; `fs_fw_usable`), a callee that sets the field (`sis900_default_phy`), a guard on a sibling pointer
+(`htc_proc_trailer` tests `next_lk_ahds` before it uses `n_lk_ahds`), and in `net` one correlated condition, one `struct_size`, one loop macro. **So 1 of 12 true (sampled false discovery rate 92%) on 7035 files, 12 reports against the hundreds
+that the reference tools give on the same subsystems for the memory-related CWEs**; the reference papers did not run CWE-476 on these four subsystems, only on `drivers/peci`, so there is nothing to compare these counts with directly.
+Whether the arm "finds something new" on the kernel: at this commit it found one real defect that is already fixed, and nothing that is still there; to look for new ones the same run has to be repeated on the current master.
