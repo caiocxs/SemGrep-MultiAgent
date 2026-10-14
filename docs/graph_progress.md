@@ -204,6 +204,24 @@ the code (no list of names).
   reported next to the alert count, since one wrong ownership decision yields many alerts.
 - **Not in this change:** C++ `new`, the Juliet flows through pointer copies, pointer-to-pointer, function pointers and static globals.
 
+## Protocol: error paths and arenas, third round of the leak query (written on 2026-10-13 **before** the change)
+
+After the second round the leak query is under 0.1 alerts/KLOC in six of nine measurable projects and about 5% of allocation sites remain flagged in correct code. The
+next suspects are paths that leave the function through an error and memory that an arena or a context frees. This round measures first, then changes.
+
+- **Measure first:** for the alerts of Git, PostgreSQL, OpenSSH portable and the other development projects, count by **kind of exit** (a return of an error value:
+  a negative literal, NULL, a variable named like an error status; a return of anything else; the end of the function) and by the allocation callee, and by the **last
+  event before the exit** (a failed call, a failed NULL check, a goto to a label). OpenSSH portable joins the development projects (its alerts will be read);
+  libuv and Lua stay untouched.
+- **Rule for acting:** a change is made only if one kind of exit or one cause holds at least 25% of the alerts of a project, and it must be a pattern of C that does not
+  name a function. Kept only if the six development projects and OpenSSH do not get worse in total, Juliet 401 does not lose more than 1 point of recall or gain false
+  positives, and Juliet 416 and 415 do not change.
+- **Held-out:** three projects never used for the leak query and never measured: **zlib** (`madler/zlib`), **libpng** (`glennrp/libpng`) and **memcached**
+  (`memcached/memcached`), blobless clones at their head, all `.c` files, headers read for `#define`s. Measured once with the query frozen, the coverage rule (at least 1
+  allocation site per KLOC) and success at most 0.1 alerts/KLOC in all files.
+- **Not in this change:** C++ `new`, Juliet flows through pointer copies, pointer-to-pointer, function pointers and static globals, allocation through a function pointer
+  (Lua, which stays blind).
+
 ## Where the arm stands (2026-10-12, final extractor)
 
 | Question | Status |
