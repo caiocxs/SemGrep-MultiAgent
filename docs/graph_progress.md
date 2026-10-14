@@ -477,3 +477,15 @@ Reading: the findings are better than the detector's (exact lines, no false posi
 `free` statement that marks it; that is the structural defect of `findings.md` (about 80% of the alerts on the source line), and a finding that says "released at line a and used at line b" does not tell the model to leave line a out. The graph's information about *where*
 the defect is does not carry the information about *what the rule must exclude*; that comes only from the real-world feedback, which was already in the loop. Two things the comparison does not say: the descriptions give away the strategy (the arm is the template arm), and the free-form YAML arm
 was not run (the protocol made it conditional on an effect, and there was none on the quantity that decides acceptance).
+
+## Protocol: the model writes the rule from the graph's findings for CWE-415 and CWE-476, accepted by validity (written on 2026-10-14 **before** the run)
+
+Why: the run for CWE-416 gave the 30B a recall of 91.6% from the graph's findings but rules too broad for the real-world limit. The question for the other CWEs is the one the TCC1 asks (is the generated rule *valid*, grammatically and on cases it was not shown),
+so the acceptance here is by validity and the real-world noise is measured beside it, not used to reject.
+
+Setup: combo D (Qwen3-Coder-30B, local), `--format yaml` (free form: the model writes the whole rule, no strategy given; only the generic Semgrep documentation and the findings), `--example-mode graph` (CWE-415: 150 findings of `double_free`, CWE-476: 168 of `null_dereference`,
+exported with `python -m src.graph.export_findings`; the exported findings of CWE-401 exist, 848 of `memory_leak`, and are not used in this run), 5-fold cross-validation by flow variant, seeds 1 and 2, up to 6 corrections.
+**Accepted = train recall of at least 50% and no false positive on the Juliet files, and (the change from the other runs) no real-world limit**: `--max-negative-rate 1000`, so the Git sources still grade each attempt and their alerts per KLOC are in the feedback and in the summary,
+but do not reject. Reported per CWE: folds accepted, held-out recall and precision, Juliet false positives, real-world alerts per KLOC, valid rules (grammatical validity: the share of attempts that reach the gate), and the number of folds that would pass the 0.1 limit.
+Not run (cost, about 100 minutes per CWE and seed pair): the same runs with the detector's findings as the baseline. Without it, a result is a level, not an effect of the graph; the comparison with the detector findings of the same CWE is the next step if the level is worth it.
+What would count as a result: accepted folds with a held-out recall well above what the template arm gave on CWE-415 (0%); a free-form rule for CWE-476 that detects held-out variants with no false positive. A result under that is reported as such.
