@@ -88,3 +88,22 @@ The datasets differ (Linux kernel and Java in the papers; Juliet and general C p
 reports against alerts per KLOC), the models (hosted frontier models against local 4B to 30B and one 120B), and the CWEs
 (CWE-401, 416 and 476 overlap with Li et al.; CWE-415 does not). No number of ours should be read as beating a number of theirs.
 The point of the table is which claims survive across the two ways of measuring.
+
+## Direct comparison on the benchmark of Li et al. (2026-10-13)
+
+The graph arm was run on their data (replication package `Feng-Jay/LLM4Security`), with the protocol written before the measurement
+(`docs/graph_progress.md`). Details, causes and the version after the cast fix are in that file.
+
+| Benchmark | RepoAudit | KNighter | CodeQL | Semgrep | Graph arm (no LLM) |
+|---|---|---|---|---|---|
+| In-house, CWE-401, 40 kernel cases (recall) | 22/40 (55.0%) | 0 | 0 | 0 | **blind**: 0 `free` events and 0 allocation sites in all 40 |
+| In-house, CWE-416, 10 kernel cases | 1/10 | 0 | 0 | 0 | **blind** in all 10 |
+| In-house, CWE-476, 14 kernel cases | 4/14 | 0 | 0 | 0 | no query |
+| ImageMagick, CWE-401 (reports; sampled false discovery) | 348 (10/10) | 0 | 141 (9/10) | 37 (10/10) | 454 (10/10); **65 (7/10) after the cast fix**, development |
+| vim, CWE-416 | 32 (10/10) | 0 | 1 (1/1) | 2 (2/2) | 235 (10/10) |
+| Linux `sound`, `mm`, `net`, `drivers/net` | 333, 356, 3, 1 reports | 6, 3, 12, 79 | 0 | 0 | blind (no `free`) |
+
+Reading: on the kernel, where all 50 of the in-house cases and four of the six real-world projects are, the graph arm has nothing to learn from because the
+kernel does not call `malloc` or `free`; on the two C projects it can read, it raises more reports than any reference tool and its sampled alerts are as
+wrong as theirs (0 of 20 real before the fix). After one general fix found by reading that sample, ImageMagick drops to 65 reports and 3 of 10 sampled look real
+(error-path leaks); that number is not independent. The earlier "under 0.1 alerts per KLOC" results do not predict the sampled precision, as stated before.
