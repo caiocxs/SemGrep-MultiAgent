@@ -582,7 +582,7 @@ class _Function:
             if operator is None or _text(operator) not in ("==", "!="):
                 return None
             for tested, other in ((left, right), (right, left)):
-                if other is not None and _text(other) in ("NULL", "0", "nullptr"):
+                if other is not None and _text(_strip(other) or other) in ("NULL", "0", "nullptr"):  # `p == (char *) NULL` too
                     path = target(tested)
                     return (path, _text(operator) == "==") if path else None
             return None

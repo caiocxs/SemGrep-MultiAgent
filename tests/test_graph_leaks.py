@@ -179,3 +179,10 @@ def test_null_test_inside_a_compound_condition_is_a_null_branch(tmp_path):
     assert [line for line, _ in leaks(tmp_path, both)] == [2]  # n <= 0 still leaks p: only the NULL side is cleared
     lone = "int f(int n) {\n char *p = malloc(n);\n if (n < 0 || n > 9) {\n  return -1;\n }\n free(p);\n return 0;\n}\n"
     assert leaks(tmp_path, lone) == [(2, "p")]  # a condition that does not test p says nothing about it
+
+
+def test_null_test_written_with_a_cast_is_a_null_test(tmp_path):
+    src = "int f(int n) {\n char *p = malloc(n);\n if (p == (char *) NULL) {\n  return -1;\n }\n free(p);\n return 0;\n}\n"
+    assert leaks(tmp_path, src) == []
+    src = "int f(int n) {\n char *p = malloc(n);\n if (p != (char *) NULL) {\n  free(p);\n }\n return 0;\n}\n"
+    assert leaks(tmp_path, src) == []

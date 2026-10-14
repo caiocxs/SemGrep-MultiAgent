@@ -277,3 +277,37 @@ cases, the vulnerable version being the parent of the fix commit.
 **What would count as a result.** Recall on A against 55% / 10% (RepoAudit) and 0 (the others); reports and SFDR on B against their Table V (RepoAudit:
 333, 356 and 348 reports for sound, mm and ImageMagick, all sampled alerts false; 3, 1 and 32 for the CWE-416 projects). A result worse than the reference
 is reported as such.
+
+### Result of the direct comparison (2026-10-13), protocol above
+
+**A. In-house benchmark (Linux kernel).** `python -m src.graph.paper_benchmark cases`: all 50 CWE-401 and CWE-416 cases analysed (the files of the fix plus the `.c` and
+`.h` of its directories at the parent commit, downloaded from the raw-content server because a sparse checkout of the kernel was too slow here), the 14
+CWE-476 cases not covered (no query). **In all 50 cases the coverage diagnostic is zero: 0 `free` events and 0 allocation sites of the standard library.** The kernel
+never calls `malloc` or `free` (it has `kmalloc` and `kfree`), and the arm learns release functions and allocators by calibrating against the project's own use
+of the standard ones, so with none present it has nothing to learn from. The arm is **blind** on this benchmark, which is not a recall of 0% of a working
+detector: no alert, near a hunk or anywhere (0 alerts in 50 cases), and no claim either way. A hand-written seed for the kernel API was not added (the arm
+takes no lists of names). Reference: RepoAudit 55.0% (22/40) and 10% (1/10), KNighter, CodeQL and Semgrep 0.
+
+**B. Real-world projects, frozen queries (`6bc9e39`).** One reviewer, 10 alerts per project chosen as every k-th in path and line order, no run of the code.
+| Project (commit) | Query | Reports | Sampled true / false | Reference reports (sampled false discovery rate) |
+|---|---|---|---|---|
+| ImageMagick `3bf1076` (288 `.c`) | memory leak | **454** | 0 / 10 | RepoAudit 348 (10/10), CodeQL 141 (9/10), Semgrep 37 (10/10), KNighter 0 |
+| vim `8feaa94` (205 `.c`) | use after free | **235** | 0 / 10 | RepoAudit 32 (10/10), Semgrep 2 (2/2), CodeQL 1 (1/1), KNighter 0 |
+| Linux `sound`, `mm`, `net`, `drivers/net` (`6093a68`) | both | not measured | | blind as in A: the probe on `mm` (125 files) gives 0 `free` events |
+
+In ImageMagick 8 of the 10 sampled alerts were a test written with a cast, `if (p == (float *) NULL)`: the extractor compared the text of the other side with `NULL` without
+removing the cast, so the NULL branch was not recognised. The other two: `Resize*` wrappers that free the old block on failure, and a reference returned by a getter.
+In vim 6 of the 10 are one `vim_free(buf); return NULL;` seen as a free followed by uses in code that is not reachable from it, and the others a free in a branch
+that returns, a callee that reassigns a global, and a reassignment right after the free. **0 of 20 sampled alerts are real, a sampled false discovery rate of 100% for both,
+the same as the reference tools**, with more reports than any of them on both projects.
+
+**C. A new version, after reading the frozen result.** `p == (T *) NULL` is read as a null test (casts removed on the compared side; `_text(_strip(other))`),
+one line and one test. Juliet unchanged (CWE-401 648/868 with 200 false positives, CWE-416 134/138, CWE-415 150/228 with the exclusion filter);
+tmux, curl, Redis, OpenSSL, Git, OpenSSH, zlib, memcached, libuv and vim unchanged (the leak query), and use after free and double free on tmux, curl, Redis, OpenSSL and Git unchanged.
+ImageMagick falls from **454 to 65 reports** (0.119 train / 0.158 test alerts per KLOC). A new sample of 10 of the 65, read the same way: **3 likely real, 7 false**
+(sampled false discovery rate 70%, against 100% / 90% / 100% of the reference tools on the same project). The three are leaks on error paths:
+`equalize_map` not released when the next allocation fails (`accelerate.c`), `density_xy` not released in the failure block of `GetImageFeatures` (`feature.c`), and
+`profiles` not released when `ThrowMIFFException` leaves `ReadMIFFImage` (`miff.c`); not confirmed by running and not reported upstream. The seven: a registry
+reference returned by a getter, a pointer handed to the image (`SetImageProfilePrivate`), a free guarded by `program_name != program_invocation_name`, a free in every
+other case of a `switch`, a macro that frees `map` (`RelinquishNodesAndMap`), and two alerts with a hit before the allocation that look like an artifact of the
+extractor. **ImageMagick is a development project for this version** (its alerts were read twice), so the 70% is a hint, not an independent measure.
