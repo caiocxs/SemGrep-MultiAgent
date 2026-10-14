@@ -460,3 +460,20 @@ What would count as a result: the 4B writing rules that detect (recall well abov
 Two things to read it with, written down now: (1) the findings are better than the detector's (0 false positives in the safe functions against 34% on the safe files for the 3B detector) and give exact lines, so any effect is the effect of the findings' quality, not a new kind of help;
 (2) the description of a finding says "released at line a and used at line b on a path with no new value", which is the strategy of the template, so the arm is the template arm and is reported with it, apart from the free-form YAML arm. A free-form arm (`--format yaml`) with the graph findings
 is the next step only if this one shows an effect.
+
+### Result: the model writes the rule from the graph's findings (2026-10-14), protocol above
+
+CWE-416, template format, 5-fold cross-validation by variant, seeds 1 and 2, the same folds and Git files as the runs they are paired with. Summaries: `logs/crossval/C/CWE-416/20261014-150439.json`, `…-152309.json` (4B) and
+`logs/crossval/D/CWE-416/20261014-154341.json`, `…-163555.json` (30B); comparison with `python -m src.pipeline.compare`.
+| Model | Findings shown | Folds | Accepted | Recall | Precision | Juliet false positives | Real-world alerts per KLOC |
+|---|---|---|---|---|---|---|---|
+| Qwen3-4B (C) | detector (`qwen4b`) | 10 | 0 | 30.0% | 26.2% (1 fold) | 33.1 | 0.008 |
+| Qwen3-4B (C) | graph | 10 | **0** | 20.0% | 24.5% (1 fold) | 60.2 | 0.014 |
+| Qwen3-Coder-30B (D) | detector (B0) | 10 | 0 | 71.6% | 89.4% | 9.0 | 2.53 |
+| Qwen3-Coder-30B (D) | graph | 10 | **0** | **91.6%** | 69.8% | 29.4 | **4.76** |
+Paired differences, graph minus detector: 4B recall -0.100 (interval -0.40 to +0.20), no effect; **30B recall +0.200 (interval -0.011 to +0.368, below the criterion because the interval includes 0), precision -0.197 (interval -0.343 to -0.047), Juliet
+false positives +20.4 (+7.2 to +33.6), real-world alerts +2.22 per KLOC (+0.43 to +4.00)**: the rules got broader, not quieter. 0 folds accepted in 20.
+Reading: the findings are better than the detector's (exact lines, no false positives in the safe functions) and the 30B got to a rule that detects at once (fold 1: recall 100% in attempt 0), but the rule it wrote is the generic taint rule whose sink is any use of the pointer, which also matches the
+`free` statement that marks it; that is the structural defect of `findings.md` (about 80% of the alerts on the source line), and a finding that says "released at line a and used at line b" does not tell the model to leave line a out. The graph's information about *where*
+the defect is does not carry the information about *what the rule must exclude*; that comes only from the real-world feedback, which was already in the loop. Two things the comparison does not say: the descriptions give away the strategy (the arm is the template arm), and the free-form YAML arm
+was not run (the protocol made it conditional on an effect, and there was none on the quantity that decides acceptance).
