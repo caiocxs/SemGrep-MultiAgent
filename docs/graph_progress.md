@@ -417,3 +417,29 @@ only the C standard library known), the extractor as it is.
 - Files that fail to parse are listed. An alert in a false task of another sub-property is not counted either way.
 Expectation written down: the tasks are small and written to stress verifiers (nondeterministic branches, pointer arithmetic, aliasing through arrays and lists, `__VERIFIER_*` calls), so a path-insensitive arm should flag a
 fair share of the safe tasks and miss many violations; the point is the number, not a target.
+
+### Result on SV-COMP (2026-10-14), protocol above
+
+`python -m src.graph.svcomp`: 507 tasks (the protocol said 510 property entries; three tasks carry two), no parse failure, no error, 12 seconds in all. Queries frozen at `abf3004`.
+
+**False positives, on the 268 safe tasks (`valid-memsafety` true), counted with no reading:**
+| Query | Safe tasks flagged | Alerts |
+|---|---|---|
+| `null_dereference` | **0** | 0 |
+| `use_after_free` | **0** | 0 |
+| `double_free` | **0** | 0 |
+| `memory_leak` | 9 (3.4%) | 9 |
+| any of the four | **9 of 268 (3.4%)** | |
+| `check_after_deref` (secondary) | 80 (29.9%) | 227 |
+The 9 tasks, all read: five `tree_*` programs of `memsafety-ext` (`main` allocates a node that other nodes keep, and the code releases the tree through another pointer by a traversal, which an ownership summary
+cannot follow), `lockfree-3.0` (`push` allocates and returns on the branch of a failed compare-and-swap), and three `ddv-machzwd` programs (a model of `pci_get_class` allocates and returns NULL on one branch). None is a defect of
+the program; they are the ownership limit of the leak query already found on real code (about 5% of allocation sites).
+
+**A bug found by this run, in the secondary query only.** 80 safe tasks for `check_after_deref` came from `while (node) { node = node->next; }`: the second half of the query kept walking after the pointer got a new value and reached the
+test of the next iteration. Fixed (the walk stops at a new value, with a test); Juliet unchanged (18 of 282, 0 false positives) and **the safe tasks flagged fall from 80 to 18 (6.7%, 28 alerts)**; the main four queries are not touched by it.
+Real-code counts of `check_after_deref` were measured before the fix and are lower now.
+
+**Recall at task level** (an alert anywhere in the task counts, so it is generous): `valid-deref` violations (115): `use_after_free` **4**, `null_dereference` **0**; `valid-free` (18): `double_free` **2**; `valid-memtrack` (71): `memory_leak`
+**22 (31%)**; `valid-memcleanup` false (36): 0 (that property also counts what is still allocated at exit, which the leak query does not report).
+Reading: on programs written to stress verifiers the arm is **quiet on safe programs (3.4%, none for the three pointer-validity queries)** and **finds a small part of the violations** (a `valid-deref` violation is mostly an out-of-bounds access, an uninitialized pointer or pointer
+arithmetic, none of which is a NULL or freed pointer; the arm has no queries for those). The two numbers say it trades recall for silence, as on real code.

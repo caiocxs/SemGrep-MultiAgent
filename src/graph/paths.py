@@ -162,7 +162,11 @@ def _certain_paths(conn):
             else:
                 pass
             # the test events are the successors of the branch that ends the chain
-            chain = _straight(succ, event_id, (), var_of, kind)
+            chain = []
+            for node in _straight(succ, event_id, (), var_of, kind):
+                if var_of[node] == var and kind[node] in ("reset", "alloc", "free"):
+                    break  # the pointer has another value after this: a test after it is of the new value (`while (n) { n = n->next; }`)
+                chain.append(node)
             last = chain[-1] if chain else event_id
             for hit in succ.get(last, ()):
                 if len(succ.get(last, ())) > 1 and var_of[hit] == var and kind[hit] in ("null", "nonnull") and line_of[hit] != line_of[event_id]:

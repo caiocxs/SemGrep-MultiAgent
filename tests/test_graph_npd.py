@@ -85,3 +85,8 @@ def test_zero_is_a_null_only_for_a_pointer_variable(tmp_path):
     assert alerts(tmp_path, "int f(void) {\n int *p = 0;\n return *p;\n}\n") == [("null-to-use", 3)]
     assert alerts(tmp_path, "int f(struct s *q) {\n u32 flags = 0;\n SET(flags, 1);\n return flags[0];\n}\n") == []
     assert alerts(tmp_path, "int f(struct s *q) {\n q->caps = 0;\n return q->caps;\n}\n") == []
+
+
+def test_a_test_after_the_pointer_got_a_new_value_is_not_a_check_after_the_dereference(tmp_path):
+    src = "int f(struct n *node) {\n while (node) {\n  node = node->next;\n }\n return 0;\n}\n"
+    assert [a for a in alerts(tmp_path, src) if a[0] == "use-to-test"] == []
