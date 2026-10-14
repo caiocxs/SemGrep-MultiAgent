@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS functions (
     name       TEXT NOT NULL,
     start_line INTEGER NOT NULL,
     end_line   INTEGER NOT NULL,
+    broken     INTEGER NOT NULL DEFAULT 0,  -- 1 when the parser had to recover from a syntax error inside the function (a macro it cannot read): its events are not trusted by the null dereference query
     pointer    INTEGER NOT NULL DEFAULT 1   -- 0 when the declared return type cannot be a pointer (int, size_t-like primitives, a struct by value)
 );
 

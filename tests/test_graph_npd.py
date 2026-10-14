@@ -55,3 +55,33 @@ def test_a_callee_that_dereferences_unguarded_counts_but_a_guarded_one_does_not(
 def test_passing_null_to_a_function_the_code_does_not_define_is_not_a_dereference(tmp_path):
     assert alerts(tmp_path, "void f(void) {\n char *p = NULL;\n unknown(p);\n}\n") == []
     assert alerts(tmp_path, "void f(void) {\n char *p = NULL;\n p = realloc(p, 10);\n free(p);\n}\n") == []
+
+
+def test_a_test_inside_a_conditional_expression_does_not_leave_the_pointer_null_afterwards(tmp_path):
+    src = "int f(struct s *c, int *out) {\n int n = c ? c->size : 0;\n *out = n;\n return c->id;\n}\n"
+    assert [a for a in alerts(tmp_path, src) if a[0] == "null-to-use"] == []
+    src = "int f(struct s *c) {\n int ok = c == NULL && log(1);\n return c->id;\n}\n"
+    assert [a for a in alerts(tmp_path, src) if a[0] == "null-to-use"] == []
+
+
+def test_typeof_and_offsetof_do_not_dereference(tmp_path):
+    src = "int f(struct s *p) {\n p = NULL;\n int n = sizeof(typeof(*p));\n return first(typeof(*p));\n}\n"
+    assert alerts(tmp_path, src) == []
+
+
+def test_taking_an_address_is_not_a_dereference(tmp_path):
+    src = "int *f(struct s *p) {\n p = NULL;\n return &p->dst;\n}\n"
+    assert alerts(tmp_path, src) == []
+    src = "void f(struct s *p) {\n p = NULL;\n lock(&p->lock);\n}\n"
+    assert alerts(tmp_path, src) == []
+
+
+def test_a_callee_that_hands_the_pointer_to_an_unknown_function_first_may_be_guarding_it(tmp_path):
+    src = "void g(struct s *q) {\n if (!unref(q))\n  return;\n q->n = 1;\n}\nvoid f(void) {\n struct s *p = NULL;\n g(p);\n}\n"
+    assert alerts(tmp_path, src) == []
+
+
+def test_zero_is_a_null_only_for_a_pointer_variable(tmp_path):
+    assert alerts(tmp_path, "int f(void) {\n int *p = 0;\n return *p;\n}\n") == [("null-to-use", 3)]
+    assert alerts(tmp_path, "int f(struct s *q) {\n u32 flags = 0;\n SET(flags, 1);\n return flags[0];\n}\n") == []
+    assert alerts(tmp_path, "int f(struct s *q) {\n q->caps = 0;\n return q->caps;\n}\n") == []

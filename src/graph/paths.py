@@ -123,8 +123,11 @@ def _certain_paths(conn):
     deref_calls = {r[0] for r in conn.execute("SELECT call_event FROM deref_calls")}
     names = {r[0]: (r[1], r[2]) for r in conn.execute("SELECT f.id, f.name, fi.path FROM functions f JOIN files fi ON fi.id = f.file_id")}
 
+    broken = {r[0] for r in conn.execute("SELECT id FROM functions WHERE broken = 1")}
+
     def dereference(event_id):
-        return kind[event_id] == "use" and detail_of[event_id] != "<arg>" and (event_id not in calls or event_id in deref_calls)
+        return (kind[event_id] == "use" and detail_of[event_id] not in ("<arg>", "<addr>") and func_of[event_id] not in broken
+                and (event_id not in calls or event_id in deref_calls))
 
     def related(hit_var, origin_var):
         return hit_var == origin_var or (hit_var or "").startswith((origin_var + ".", origin_var + "[", origin_var + "->"))
@@ -140,13 +143,14 @@ def _certain_paths(conn):
         var = var_of[event_id]
         if not var:
             continue
-        null_source = k == "null" or (k == "reset" and detail_of[event_id] == "<null-assign>")
+        null_source = (k == "null" or (k == "reset" and detail_of[event_id] == "<null-assign>")) and func_of[event_id] not in broken
         if null_source:  # source to dereference
             for hit in _straight(succ, event_id, (), var_of, kind):
                 if var_of[hit] == var and kind[hit] in ("reset", "alloc", "free", "nonnull"):
                     break  # a new value, a release or a non-NULL test ends it
                 if related(var_of[hit], var) and dereference(hit):
-                    row(event_id, hit, "null-to-use")
+                    if line_of[hit] != line_of[event_id]:  # a source and a dereference on one line is a macro's own temporary (`tl` in `local_trylock`)
+                        row(event_id, hit, "null-to-use")
                     break
         if dereference(event_id):  # dereference to test
             for hit in _straight(succ, event_id, (), var_of, kind):

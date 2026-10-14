@@ -82,6 +82,8 @@ BIG_RECURSION = 60000        # recursion limit while a file is walked (nested ex
 BIG_STACK = 256 * 1024 * 1024  # stack of the thread that walks it (smaller sizes are tried if the system refuses it)
 ENTRY, RETURN, END, NORETURN = "<entry>", "<return>", "<end>", "<noreturn>"  # details of the marker events of a function
 SCOPE_END = "<scope-end>"  # detail of the reset that marks a variable going out of scope (a pointer still holding an allocation leaks there)
+ADDR_USE = "<addr>"  # detail of a `use` that only takes an address (`&p->f`, `&p[i]`): it reads nothing, so it is not a dereference for the null query
+UNEVALUATED = {"typeof", "__typeof__", "__typeof", "offsetof", "__builtin_offsetof", "alignof", "_Alignof", "__alignof__", "__alignof", "__builtin_types_compatible_p"}
 ARG_USE = "<arg>"  # detail of a `use` that is an argument handed to a call that is not resolved (not a dereference)
 NULL_ASSIGN = "<null-assign>"  # detail of the reset that assigns NULL (`p = NULL`, `T *p = NULL`): a source of the null dereference query
 REALLOC_SELF = "<realloc-self>"  # detail of `p = realloc(p, n)`: the old block is lost if the call fails
@@ -106,6 +108,15 @@ def _strip(node):
         node = node.child_by_field_name("value") if node.type == "cast_expression" else (
             node.named_children[0] if node.named_children else None)
     return node
+
+
+def _has_star(declarator):
+    node = declarator
+    while node is not None:
+        if node.type in ("pointer_declarator", "abstract_pointer_declarator"):
+            return True
+        node = node.child_by_field_name("declarator")
+    return False
 
 
 def _is_null_literal(node):
@@ -172,6 +183,7 @@ class _Function:
         self.x = extractor
         self.params = set(params)
         self.locals = set(params)  # the names that belong to this function: parameters and declared variables
+        self.pointer_vars = set()  # locals declared with a `*`: the only ones for which a plain `0` is a NULL
         self.plain = set()         # of those, the ones declared as an int, a char, a struct by value...: they cannot own an allocation
         self.macro_depth = 0
         self.call_row = None     # while a macro body is walked, the line of the call, for the events it makes
@@ -236,20 +248,32 @@ class _Function:
             self.use(path_of(base), n)
         elif t == "pointer_expression":
             argument = n.child_by_field_name("argument")
+            if n.children and n.children[0].type == "&":
+                inner = _strip(argument)
+                while inner is not None and inner.type == "field_expression" and not any(c.type == "->" for c in inner.children):
+                    inner = _strip(inner.child_by_field_name("argument"))  # `&p->a.b` takes the address of a member of *p
+                if inner is not None and inner.type in ("field_expression", "subscript_expression"):
+                    base = inner.child_by_field_name("argument")
+                    self.expr(base)
+                    if inner.type == "subscript_expression":
+                        self.expr(inner.child_by_field_name("index"))
+                    if path_of(base):
+                        self.event("use", path_of(base), n, detail=ADDR_USE)
+                    return
             self.expr(argument)
             if n.children and n.children[0].type == "*":
                 self.use(path_of(argument), n)
         elif t == "binary_expression" and _text(n.child_by_field_name("operator") or n) in ("&&", "||"):
             left = n.child_by_field_name("left")
             self.expr(left)
-            self._tested(left, _text(n.child_by_field_name("operator")) == "&&")  # the right side runs only when the left decided so
+            self._tested(left, _text(n.child_by_field_name("operator")) == "&&", nulls=False)  # the right side runs only when the left decided so
             self.expr(n.child_by_field_name("right"))
         elif t == "conditional_expression":
             condition = n.child_by_field_name("condition")
             self.expr(condition)
-            self._tested(condition, True)
+            self._tested(condition, True, nulls=False)
             self.expr(n.child_by_field_name("consequence"))
-            self._tested(condition, False)
+            self._tested(condition, False, nulls=False)
             self.expr(n.child_by_field_name("alternative"))
         else:
             for child in n.named_children:
@@ -369,7 +393,7 @@ class _Function:
         if path:
             same = self._realloc_first(right) == path
             eid = self.event("alloc" if self._allocates(right) else "reset", path, n,
-                             detail=REALLOC_SELF if same else (NULL_ASSIGN if _is_null_literal(right) else None))
+                             detail=REALLOC_SELF if same else (NULL_ASSIGN if self._null_for(right, path) else None))
             self._acquire(eid, right, path)
             if left.type == "identifier":
                 self.track(path, right)
@@ -377,6 +401,8 @@ class _Function:
     def call(self, n):
         function = n.child_by_field_name("function")
         name = _called_name(n)
+        if name in UNEVALUATED:  # `typeof(*p)`, `offsetof(T, f)`: the operand is not evaluated, so `*p` there dereferences nothing
+            return
         if name is None:
             self.expr(function)  # `p->fn(x)` dereferences p
         arguments = n.child_by_field_name("arguments")
@@ -547,12 +573,22 @@ class _Function:
                     self.plain.discard(name)
                 else:
                     self.plain.add(name)
-                eid = self.event(kind, name, declarator, detail=NULL_ASSIGN if _is_null_literal(value) else None)
+                if _has_star(declarator.child_by_field_name("declarator") if declarator.type == "init_declarator" else declarator):
+                    self.pointer_vars.add(name)
+                eid = self.event(kind, name, declarator, detail=NULL_ASSIGN if self._null_for(value, name) else None)
                 if value is not None:
                     self._acquire(eid, value, name)
                 self.track(name, value)
                 if self.scopes:
                     self.scopes[-1].append(name)
+
+    def _null_for(self, value, name):
+        """`NULL` is a NULL anywhere; a plain `0` only for a local declared as a pointer (`u32 x = 0` and `dev->caps = 0` are integers)."""
+        value = _strip(value)
+        if value is None:
+            return False
+        text = _text(value)
+        return text in ("NULL", "nullptr") or (text == "0" and name in self.pointer_vars)
 
     def _constant(self, node):
         """The integer a condition always evaluates to (see the module docstring), or None."""
@@ -671,9 +707,11 @@ class _Function:
             return [], []
         return ([], [test[0]]) if test[1] else ([test[0]], [])
 
-    def _tested(self, condition, outcome):
-        """Events for what the condition being true (`outcome` True) or false says about NULL, emitted on the branch that follows."""
-        nulls = self._null_facts(condition)[0 if outcome else 1]
+    def _tested(self, condition, outcome, nulls=True):
+        """Events for what the condition being true (`outcome` True) or false says about NULL, emitted on the branch that follows. Inside an
+        expression (`a && b`, `c ? x : y`) the flow is linear, so what follows the expression also follows these events: only the non-NULL
+        ones are safe there (they can only end a null path), a `null` event would stay on the path to the next statement."""
+        nulls = self._null_facts(condition)[0 if outcome else 1] if nulls else []
         nonnulls = self._nonnull_facts(condition)[0 if outcome else 1]
         for path in nulls:
             self.event("null", path, condition)
@@ -1001,8 +1039,8 @@ def extract_file(conn, path, extractor=None):
         body = node.child_by_field_name("body")
         if not name or body is None:
             continue
-        cur = conn.execute("INSERT INTO functions (file_id, name, start_line, end_line, pointer) VALUES (?, ?, ?, ?, ?)",
-                           (file_id, name, node.start_point[0] + 1, node.end_point[0] + 1, int(returns_pointer)))
+        cur = conn.execute("INSERT INTO functions (file_id, name, start_line, end_line, pointer, broken) VALUES (?, ?, ?, ?, ?, ?)",
+                           (file_id, name, node.start_point[0] + 1, node.end_point[0] + 1, int(returns_pointer), int(node.has_error)))
         func_id = cur.lastrowid
         conn.executemany("INSERT INTO params VALUES (?, ?, ?)",
                          [(func_id, i, p) for i, p in enumerate(params) if p])
@@ -1516,8 +1554,10 @@ def _summarize(conn, params, inferred):
             if idx is None:
                 continue
             if kind == "use":
-                if (event_id in call_ids and event_id in deref_call_ids) or (event_id not in call_ids and detail != ARG_USE):
+                if (event_id in call_ids and event_id in deref_call_ids) or (event_id not in call_ids and detail not in (ARG_USE, ADDR_USE)):
                     direct.setdefault((func_id, idx), set()).add(event_id)
+                elif event_id in call_ids:  # a call the project does not define may test the pointer first (an inline function in a header)
+                    guards.setdefault((func_id, idx), set()).add(event_id)
             else:
                 guards.setdefault((func_id, idx), set()).add(event_id)
         found = set()

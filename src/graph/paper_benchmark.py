@@ -165,6 +165,8 @@ def cmd_project(args):
     cwe = {"memory_leak": "CWE-401", "use_after_free": "CWE-416", "null_dereference": "CWE-476", "check_after_deref": "CWE-476-check"}[args.query]
     files = collect_files([str(root)])
     headers = sorted(root.rglob("*.h"))
+    for extra in args.headers or ():  # directories read only for their `#define`s (the kernel's `include/`)
+        headers += sorted(Path(extra).rglob("*.h"))
     started = time.time()
     alerts, failed = run_query(cwe, files, headers)
     alerts.sort(key=lambda a: (a["path"], a["line"]))
@@ -193,6 +195,7 @@ def main():
     project.add_argument("--query", choices=("memory_leak", "use_after_free", "null_dereference", "check_after_deref"), required=True)
     project.add_argument("--sample", type=int, default=10)
     project.add_argument("--out")
+    project.add_argument("--headers", action="append", help="extra directory whose headers are read for macros (repeatable)")
     args = parser.parse_args()
     {"cases": cmd_cases, "project": cmd_project}[args.cmd](args)
 
