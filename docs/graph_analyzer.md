@@ -1,7 +1,7 @@
 # Event-graph analyzer (design sketch)
 
 Status: on branch `feat/graph-analyzer`. The schema, the path queries, the tree-sitter extractor, the scoring against Juliet and real
-projects, and the fix-commit evaluation exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`, `tests/test_graph_leaks.py`, 92 tests); the LLM
+projects, and the fix-commit evaluation exist and are tested (`tests/test_graph_paths.py`, `tests/test_graph_extract.py`, `tests/test_graph_leaks.py`, 93 tests); the LLM
 judge was decided against. The tables above the section "No hand-written names" were measured at earlier versions of the extractor (with
 hand-written lists); that section has the current numbers.
 
@@ -241,6 +241,10 @@ a pointer, arena allocators). The details are in [graph_progress.md](graph_progr
 | **OpenSSH portable (157)** | 6.9 | 0.249 / 0.154 | **0.210** | **never seen, frozen query, fails** |
 | SQLite (440) | 0.8 | 0.074 / 0.031 | 0.061 | blind by the rule (below 1 site per KLOC) |
 | Lua (28) | 0.0 | 0 / 0 | 0 | blind: it allocates through a function pointer |
+
+Third round (2026-10-13): null tests inside compound conditions are read (OpenSSH 0.210 to 0.153, OpenSSL 0.078 to 0.069, nothing else moved; OpenSSH is now a
+development project and still fails). Independent measure with the query frozen, never seen before: **zlib 0.038 (passes), memcached 0.095 (passes, on the line),
+libpng blind** (0.4 allocation sites per KLOC, it allocates through `png_malloc`). Independent record for the leak query: vim, libuv, zlib, memcached pass; SQLite, Lua, libpng blind; none fails.
 
 Juliet CWE-401 stayed at 648 of 868 (74.7%) with 200 false positives (the flags defined in files that are not in the data). Reading: ownership is the hard part, and
 it moved a lot (tmux 0.321 to 0.037) but not everywhere. Two of three projects the query had never seen pass; six of the nine it can be measured on pass. About 5% of
