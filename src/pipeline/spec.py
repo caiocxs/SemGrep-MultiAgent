@@ -278,6 +278,26 @@ def build_template_spec(spec):
     return {"message": spec.get("message", ""), "taint": taint}, problems
 
 
+_STATE = {"type": "object", "properties": {"pattern": {"type": "string"}, "variable": {"type": "string"}},
+          "required": ["pattern", "variable"], "additionalProperties": False}
+_STRINGS = {"type": "array", "items": {"type": "string"}}
+# What the decoder is held to when a template answer is generated under a grammar: the keys `build_template_spec` accepts and no others.
+TEMPLATE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "message": {"type": "string"},
+        "event": _STATE,
+        "uses": {"type": "array", "minItems": 1, "items": {"anyOf": [
+            {"type": "string"},
+            {"type": "object", "properties": {"pattern": {"type": "string"}, "focus": {"type": "string"}, "not": _STRINGS, "not_inside": _STRINGS},
+             "required": ["pattern"], "additionalProperties": False}]}},
+        "resets": {"type": "array", "items": _STATE},
+    },
+    "required": ["message", "event", "uses"],
+    "additionalProperties": False,
+}
+
+
 def parse_template_response(text, rule_id, cwe, forbidden):
     """Same contract as `parse_response`, for template-format answers."""
     spec, spec_text, problems = _load_json(text)

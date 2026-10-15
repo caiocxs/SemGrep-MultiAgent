@@ -128,7 +128,7 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
                samples=1, temperature=None, stop_on_pass=False,
                negatives=None, max_negative_rate=0.1, max_negative_files=None, fold=None, folds=None,
                docs=True, history=False, critic=False, merge=False, example_mode="findings", diagnose=True,
-               guard=False, project_apis=False):
+               guard=False, project_apis=False, grammar=False):
     """
     Runs the loop for one CWE and returns the run log (also written to disk).
     `complete(role, prompt) -> (text, seconds)` defaults to the combo's local
@@ -256,6 +256,13 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
     if samples > 1 and temperature is None:
         temperature = 0.7  # identical samples would be pointless
     call = complete if temperature is None else (lambda r, pr: complete(r, pr, temperature=temperature))
+    if grammar:
+        if output_format != "template":
+            raise ValueError("grammar is defined for the template format only")
+        from src.pipeline.spec import TEMPLATE_SCHEMA
+        plain = call
+        call = lambda r, pr: (complete(r, pr, json_schema=TEMPLATE_SCHEMA) if temperature is None
+                              else complete(r, pr, temperature=temperature, json_schema=TEMPLATE_SCHEMA))
 
     def step(k, n, role, prompt, seen):
         """One model call, parsed and graded by the gate. Returns the attempt and the feedback for the corrector."""
@@ -376,7 +383,7 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         "run_id": run_id, "cwe": cwe, "combo": combo["name"], "seed": seed, "format": output_format, "min_recall": min_recall,
         "fold": fold, "folds": folds, "docs": docs,
         "roles": {"history": history, "critic": critic, "merge": merge, "example_mode": example_mode, "diagnose": diagnose,
-                  "guard": guard, "project_apis": project_apis},
+                  "guard": guard, "project_apis": project_apis, "grammar": grammar},
         "models": {r: combo["roles"][r]["model"]["name"]
                    for r in ("generator", "corrector") + (("critic",) if critic else ()) + (("merger",) if merge else ())},
         "split": {"test_variants": test_variants, "train_bad": len(train_bad), "train_good": len(train_good),
@@ -453,6 +460,7 @@ def main():
                         help="The corrector always edits the best rule so far; a correction that scores worse is discarded")
     parser.add_argument("--project-apis", action="store_true",
                         help="Tell the prompts which memory functions the --negatives project defines (makes the rule project-specific)")
+    parser.add_argument("--grammar", action="store_true", help="Hold the decoder to the JSON schema of the template (template format only)")
     parser.add_argument("--no-docs", action="store_true",
                         help="Leave the Semgrep documentation out of the generator and corrector prompts (ablation)")
     args = parser.parse_args()
@@ -467,7 +475,7 @@ def main():
         max_negative_files=args.negatives_max_files, fold=args.fold, folds=args.folds,
         rules_dir=Path(args.rules_dir), docs=not args.no_docs, history=args.history, critic=args.critic,
         merge=args.merge, example_mode=args.example_mode, diagnose=not args.no_diagnosis,
-        guard=args.guard, project_apis=args.project_apis,
+        guard=args.guard, project_apis=args.project_apis, grammar=args.grammar,
     )
 
 

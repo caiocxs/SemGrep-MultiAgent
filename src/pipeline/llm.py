@@ -48,7 +48,7 @@ class LocalLLM:
             self._loaded = None
             gc.collect()
 
-    def complete(self, role, prompt, temperature=None, max_seconds=None):
+    def complete(self, role, prompt, temperature=None, max_seconds=None, json_schema=None):
         """
         Returns (response_text, seconds) for a single-turn prompt with the role's settings;
         `temperature` overrides the combo's value for this call. The answer is streamed and
@@ -60,11 +60,13 @@ class LocalLLM:
         self._load(settings)
         limit = max_seconds or settings.get("max_seconds", DEFAULT_MAX_SECONDS)
         start = time.time()
+        extra = {"response_format": {"type": "json_object", "schema": json_schema}} if json_schema else {}  # the decoder only emits a valid answer
         stream = self._llm.create_chat_completion(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=settings["max_tokens"],
             temperature=settings.get("temperature", 0.0) if temperature is None else temperature,
             stream=True,
+            **extra,
         )
         parts = []
         for chunk in stream:

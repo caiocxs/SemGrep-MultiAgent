@@ -50,6 +50,9 @@ $experiments = [ordered]@{
     # the generator is shown the alerts of the event-graph analysis (python -m src.graph.export_findings --cwe CWE-416 first), docs/graph_progress.md
     graph4b      = @{ Combo = "C"; Extra = @("--example-mode", "graph"); Ram = 6 }
     graph        = @{ Combo = "D"; Extra = @("--example-mode", "graph") }
+    # the decoder is held to the JSON schema of the template (docs/graph_progress.md, alternative generators)
+    grammar4b    = @{ Combo = "C"; Extra = @("--grammar"); Ram = 6 }
+    grammar      = @{ Combo = "D"; Extra = @("--grammar") }
 }
 
 # "-Only a,b" arrives as one string when the script is started with `powershell -File`: split it.

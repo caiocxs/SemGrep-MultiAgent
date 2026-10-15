@@ -67,6 +67,8 @@ def config_label(summary):
     parts += [name for name in ("history", "critic", "merge", "guard") if roles.get(name)]
     if roles.get("project_apis"):
         parts.append("projectapis")
+    if roles.get("grammar"):
+        parts.append("grammar")
     if roles.get("example_mode") not in (None, "findings"):
         parts.append(f"examples-{roles['example_mode']}")
     if roles.get("diagnose") is False:
