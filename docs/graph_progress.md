@@ -489,3 +489,18 @@ exported with `python -m src.graph.export_findings`; the exported findings of CW
 but do not reject. Reported per CWE: folds accepted, held-out recall and precision, Juliet false positives, real-world alerts per KLOC, valid rules (grammatical validity: the share of attempts that reach the gate), and the number of folds that would pass the 0.1 limit.
 Not run (cost, about 100 minutes per CWE and seed pair): the same runs with the detector's findings as the baseline. Without it, a result is a level, not an effect of the graph; the comparison with the detector findings of the same CWE is the next step if the level is worth it.
 What would count as a result: accepted folds with a held-out recall well above what the template arm gave on CWE-415 (0%); a free-form rule for CWE-476 that detects held-out variants with no false positive. A result under that is reported as such.
+
+### Result: the graph's findings on CWE-415 and CWE-476, accepted by validity (2026-10-15), protocol above
+
+Combo D (30B local), free-form YAML, `--example-mode graph`, 5-fold cross-validation by variant, seeds 1 and 2, `--max-negative-rate 1000` (the Git sources grade and feed back, they do not reject). Summaries:
+`logs/crossval/D/CWE-415/20261015-031019.json`, `…-034743.json` and `logs/crossval/D/CWE-476/` (the two summaries of 2026-10-15 with `example_mode: graph`).
+| CWE | Folds | With a rule | Accepted | Mean held-out recall (median) | Folds with recall of 50% or more | Folds with 0 Juliet false positives and recall above 0 | Mean Juliet false positives | Real-world alerts per KLOC (mean; folds at or under 0.1) |
+|---|---|---|---|---|---|---|---|---|
+| 415 | 10 | 9 | **0** | 64.3% (69.9%) | 8 | 1 | 89.3 | 4.55 (2) |
+| 476 | 10 | 10 | **0** | 23.9% (7.9%) | 3 | 0 | 40.3 | 52.8 (4) |
+**CWE-415.** The template of the use after free gave 0% on this CWE; in free form with the graph's findings the 30B reaches a held-out recall of 64.3%, and 8 of 10 folds detect at least half of the unseen variants. One fold is clean (seed 1, variants 03, 06, 07, 09, 11, 13, 15, 31, 61:
+recall 78%, precision 100%, 0 Juliet false positives, 0.43 alerts per KLOC); it was not accepted because its *train* recall was under 50%. Two folds have a rule that detects nothing. The others detect more and match more: 84 to 144 Juliet false positives and about 6.7 alerts per KLOC
+(one has 120 false positives and 0.01 alerts per KLOC, a rule broad on the Juliet files and narrow on Git). So the free form with the graph findings makes a rule that is *valid* (it runs, it detects held-out variants) and not yet *quiet*: no fold passes the validity acceptance either.
+**CWE-476.** Weak. Half of the folds (5) have a rule that matches nothing (recall 0%, 0 false positives); the folds whose rule detects (recall 51% to 80%) match nearly every dereference on real code, **110 to 145 alerts per KLOC** (the graph query gives 0.03). The idea the findings give
+("NULL, then dereferenced") needs the notion of a path with no test in between, which a Semgrep pattern cannot state, and the model writes either a pattern that never matches or one that matches any dereference. This is the clearest case so far of the limit of the rule language, not of the model.
+Honest limits: no baseline with the detector's findings was run for these two CWEs (so these are levels, not effects of the graph); two seeds; 30B local only; for CWE-415 the extra reading of the one clean rule was not done.
