@@ -517,3 +517,26 @@ All use the same folds, seeds (1 and 2), Juliet files and Git files as the runs 
 4. **Compiling the graph query**: one fixed spec per CWE (event `free($P)`; uses: a dereference, an index, a call with the pointer; `not_inside` the event; resets), written by us from what the graph query does, graded in every fold. It is an upper bound for what the template language reaches, not a result of a model.
 Whose rule it is, said before the numbers: 1 is the model's; 2 starts from the model's and is edited by a program; 3 and 4 are written by programs from our knowledge of the strategy (taint by side effect with resets), like the template arm, and are reported apart from 1 and 2.
 Success = the number of accepted folds of 10, then the held-out alerts per KLOC under 0.1 with recall above 50%. A generator that is no better than the model's own run is reported as not better.
+
+### Result: the alternative rule generators (2026-10-16), protocol above
+
+CWE-416 and CWE-415, seeds 1 and 2, 5-fold cross-validation by variant, the same folds, Juliet files and Git files as the model runs; acceptance = train recall of at least 50%, no Juliet false positive, at most 0.1 alerts per KLOC on the Git train files.
+Summaries in `logs/crossval/NONE/<CWE>/` (deterministic generators) and `logs/crossval/C/CWE-416/` (grammar, 4B); code in `src/pipeline/rulegen.py`.
+| # | Generator | Who writes the rule | CWE | Accepted (of 10) | Held-out recall | Juliet false positives | Real-world alerts per KLOC |
+|---|---|---|---|---|---|---|---|
+| - | the model alone (B0, 30B, template) | model | 416 | 0 | 71.6% | 9.0 | 2.53 |
+| - | the model with the graph's findings (30B) | model | 416 | 0 | 91.6% | 29.4 | 4.76 |
+| 1 | decoder held to the template's JSON schema, 4B | model | 416 | **0** | 20.0% | - | ~0.01 (rules that match nothing) |
+| 1 | the same, 30B | model | 416 | not run: the run waited 2 hours for 20 GB of free RAM and gave up | | | |
+| 2 | repair operators on the model's best attempt (30B template of B0) | model, edited by a program | 416 | **5** | 71.6% | 1.8 | 0.26 (accepted folds under 0.1) |
+| 3 | synthesis from the graph's findings (patterns abstracted from train findings, greedy cover) | program | 416 | **9** | 58.1% | 1.2 | 0.02 |
+| 4 | fixed spec with the calls that take the pointer | program (us) | 416 | 0 | 87.0% | 12 on train | 0.31 to 0.40 |
+| 4 | fixed spec, dereference only (`fixed_deref`) | program (us) | 416 | **10** | 52.0% | 0.0 | 0.06 |
+| 4 | fixed spec | program (us) | 415 | 0 | 84.7% | 127 | 6.81 |
+| 3 | synthesis | program | 415 | 0 | 0.0% | 0 | 0 (every candidate was excluded by `not_inside free($X)`, a flaw of this run) |
+Notes. (a) `fixed_deref` was chosen *after* the first fixed spec gave 12 Juliet false positives and 0.19 alerts per KLOC on the train files of fold 0, so it is tuned on one fold; both specs are in the code. (b) The synthesis keeps `not_inside free($X)` on every use whatever the CWE;
+for CWE-415 the use is itself a `free`, so nothing survives: the 0% is a flaw of the generator for that CWE, not a measure of the idea. (c) The graph's findings and the template strategy (taint by side effect, resets `$P = ...`) are our knowledge in 3 and 4; in 2 the strategy is the model's and the edits are ours.
+**Ranking by accepted folds on CWE-416: 4 dereference-only 10 of 10, 3 synthesis 9 of 10, 2 repair 5 of 10, then 1 grammar and the model alone 0 of 10.** With a model in the loop, only the repair got there (5 of 10, from 0 of 10): the decoder changes nothing because syntax was not the problem.
+**What "accepted" is worth: the 22 alerts of `fixed_deref` on the Git sources, all read, are all false** (0 real): loops that free one element and use the next (`free(d->messages[i])` then `d->messages[j]`), a reassignment by a macro (`FLEX_ALLOC_STR`) or by a function (`x = xmalloc(..)` after `free(x)`, where the pattern `*x` inside `sizeof(*x)`
+is matched), a hashmap entry added after being freed on another path. The rule is quiet (0.06 per KLOC), valid and detects half of the held-out Juliet cases by dereference, and its alerts on real code are not bugs; the gate measures noise and recall on Juliet, not whether an alert is true. The two things the accepted rules also do
+not do are to find the cases where the pointer is handed to a function (87% against 52% recall) and to cover CWE-415 or CWE-476, where the event and the use are the same pattern or the use needs a path with no test in between.
