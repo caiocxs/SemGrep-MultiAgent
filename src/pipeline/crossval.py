@@ -183,7 +183,7 @@ def main():
     parser.add_argument("--min-recall", type=float, default=0.5)
     parser.add_argument("--max-fix-attempts", type=int, default=None)
     parser.add_argument("--seed", type=int, default=0, help="Seed of the fold assignment and the example choice")
-    parser.add_argument("--format", choices=("yaml", "spec", "template"), default="yaml")
+    parser.add_argument("--format", choices=("yaml", "spec", "template", "form"), default="yaml")
     parser.add_argument("--negatives", default=None)
     parser.add_argument("--max-negative-rate", type=float, default=0.1)
     parser.add_argument("--negatives-max-files", type=int, default=None)

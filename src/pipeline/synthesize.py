@@ -175,12 +175,14 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         "yaml": ("rule_generator", "rule_corrector", parse_response),
         "spec": ("spec_generator", "spec_corrector", parse_spec_response),
         "template": ("template_generator", "template_corrector", parse_template_response),
+        "form": ("form_generator", "form_corrector", parse_response),  # a YAML form with blanks; the answer is parsed as a YAML rule
     }
     if output_format not in formats:
         raise ValueError(f"Unknown output format: {output_format}")
     if example_mode not in ("findings", "graph", "pairs", "none"):
         raise ValueError(f"Unknown example mode: {example_mode}")
-    spec_mode = output_format != "yaml"  # the model answers in JSON, not YAML
+    spec_mode = output_format in ("spec", "template")  # the model answers in JSON, not YAML
+    pattern_docs_only = output_format in ("spec", "template", "form")  # only the pattern syntax, the form carries the rest
     generator_template, corrector_template, parse = formats[output_format]
     combo = load_combo(combo_name)
     if max_fix_attempts is None:
@@ -226,8 +228,11 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         common["PROJECT_APIS"] = describe_project(negatives)
         print(f"Project functions in the prompts: {len(common['PROJECT_APIS'].splitlines())} lines"
               if common["PROJECT_APIS"] else "No project memory functions found.")
-    docs_text = (load_pattern_docs() if spec_mode else load_docs()) if docs else NO_DOCS_NOTE
-    common["PATTERN_DOCS" if spec_mode else "SEMGREP_DOCS"] = docs_text
+    docs_text = (load_pattern_docs() if pattern_docs_only else load_docs()) if docs else NO_DOCS_NOTE
+    common["PATTERN_DOCS" if pattern_docs_only else "SEMGREP_DOCS"] = docs_text
+    if output_format == "form":
+        from src.pipeline.form import SKELETON
+        common["FORM"] = SKELETON
     forbidden = forbidden_identifiers(examples)
     rule_id = f"gen-{cwe.lower()}"
 
@@ -257,12 +262,15 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         temperature = 0.7  # identical samples would be pointless
     call = complete if temperature is None else (lambda r, pr: complete(r, pr, temperature=temperature))
     if grammar:
-        if output_format != "template":
-            raise ValueError("grammar is defined for the template format only")
-        from src.pipeline.spec import TEMPLATE_SCHEMA
-        plain = call
-        call = lambda r, pr: (complete(r, pr, json_schema=TEMPLATE_SCHEMA) if temperature is None
-                              else complete(r, pr, temperature=temperature, json_schema=TEMPLATE_SCHEMA))
+        if output_format == "template":
+            from src.pipeline.spec import TEMPLATE_SCHEMA
+            held = {"json_schema": TEMPLATE_SCHEMA}  # a JSON schema for the template
+        elif output_format == "form":
+            from src.pipeline.form import grammar as form_grammar
+            held = {"grammar": form_grammar(cwe)}  # the skeleton of the form
+        else:
+            raise ValueError("grammar is defined for the template and form formats only")
+        call = lambda r, pr: (complete(r, pr, **held) if temperature is None else complete(r, pr, temperature=temperature, **held))
 
     def step(k, n, role, prompt, seen):
         """One model call, parsed and graded by the gate. Returns the attempt and the feedback for the corrector."""
@@ -434,7 +442,7 @@ def main():
     parser.add_argument("--rules-dir", default="rules",
                         help="Where candidates/ and accepted/ are written (rules/accepted/ is versioned: "
                              "use another directory for experiments that must not overwrite it)")
-    parser.add_argument("--format", choices=("yaml", "spec", "template"), default="yaml",
+    parser.add_argument("--format", choices=("yaml", "spec", "template", "form"), default="yaml",
                         help="yaml: the model writes the rule; spec: the model writes a JSON of patterns; "
                              "template: the model fills in a predefined strategy (patterns only)")
     parser.add_argument("--samples", type=int, default=1,
