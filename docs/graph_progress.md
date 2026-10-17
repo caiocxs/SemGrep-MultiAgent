@@ -540,3 +540,19 @@ for CWE-415 the use is itself a `free`, so nothing survives: the 0% is a flaw of
 **What "accepted" is worth: the 22 alerts of `fixed_deref` on the Git sources, all read, are all false** (0 real): loops that free one element and use the next (`free(d->messages[i])` then `d->messages[j]`), a reassignment by a macro (`FLEX_ALLOC_STR`) or by a function (`x = xmalloc(..)` after `free(x)`, where the pattern `*x` inside `sizeof(*x)`
 is matched), a hashmap entry added after being freed on another path. The rule is quiet (0.06 per KLOC), valid and detects half of the held-out Juliet cases by dereference, and its alerts on real code are not bugs; the gate measures noise and recall on Juliet, not whether an alert is true. The two things the accepted rules also do
 not do are to find the cases where the pointer is handed to a function (87% against 52% recall) and to cover CWE-415 or CWE-476, where the event and the use are the same pattern or the use needs a path with no test in between.
+
+## Protocol: CWE-457 and the form format, where the model only fills blanks (written on 2026-10-17 **before** the run)
+
+Question: if the model does not write the rule but fills the blanks of a Semgrep rule, with the decoder held to the skeleton by a grammar, does it write rules that pass the gate, and does that beat letting it write the YAML? CWE-457 (use of an uninitialized variable) is run because it was never tried
+and because a form of this kind is what it needs.
+Two facts found before the run, from hand-written probes on the Juliet files (not results of a model): (1) in taint mode a declaration without a value does not start a taint in Semgrep OSS for C, so a taint rule with the declaration as source has a recall of 0%; (2) in search mode a rule that matches a declaration, anything, and a use,
+excluding the same shape with an assignment before the use, has a recall of 31% with no false positive on the first 120 pairs of files; the variant with `pattern-inside` / `pattern-not-inside` gets 33% and 64 false positives. So the Semgrep rule for this CWE is a search-mode rule, and a recall of about one third is
+what a first idea reaches.
+Arms, CWE-457, 4B local model (combo C), 5-fold cross-validation by variant, seeds 1 and 2, up to 6 corrections, the detector's findings as examples (698 findings of CWE-457 in the v1 logs, false positives on safe files included), the gate with the Git sources (acceptance: train recall of at least 50%, no Juliet false positive, at most 0.1 alerts per KLOC):
+- `yaml`: the model writes the rule as YAML (the format of the first runs);
+- `template`: the model fills the JSON of the template (taint strategy; expected to fail by fact 1);
+- `form` with the grammar: the blanks of a taint rule (same strategy as the template, as YAML);
+- `formsearch` with the grammar: the blanks of a search-mode rule: one to four alternatives, up to four `pattern-not`, up to two `pattern-not-inside`, `focus-metavariable: $X` fixed.
+The 30B (combo D) is run for `formsearch` and `yaml` afterwards if the memory allows (20 GB free).
+Whose rule it is: `yaml` is the model's; the three others fix the skeleton, which is our knowledge, and are reported apart from `yaml`, as the template arm is.
+Success = accepted folds of 10, then held-out recall with alerts per KLOC under 0.1; a result no better than `yaml` is reported as not better.
