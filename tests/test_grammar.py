@@ -95,3 +95,33 @@ def test_form_format_runs_through_the_loop_and_holds_the_decoder_to_the_grammar(
     assert held and held.startswith("root ::=") and "gen-cwe-416" in held
     assert "The form you fill in" in prompt and "<the statement that puts $X in a state>" in prompt and "{{" not in prompt
     assert run["attempts"][0]["rule_source"].startswith("rules:")
+
+
+SEARCH_FORM = r'''rules:
+  - id: gen-cwe-457
+    languages:
+      - c
+    severity: ERROR
+    message: "A variable is used before it is given a value."
+    patterns:
+      - pattern-either:
+          - pattern: "$T $X;\n...\n$F($X);"
+      - pattern-not: "$T $X;\n...\n$X = ...;\n...\n$F($X);"
+      - focus-metavariable: $X
+'''
+
+
+def test_search_form_is_a_rule_and_the_grammars_compile():
+    from src.pipeline.form import SEARCH_SKELETON, grammar, search_grammar
+    from src.pipeline.rules import parse_response
+    yaml_text, rule_doc, problems = parse_response(SEARCH_FORM, "gen-cwe-457", "CWE-457", set())
+    assert problems == [] and "pattern-either" in str(rule_doc)
+    assert "pattern-either" in search_grammar("CWE-457") and "\\n" in search_grammar("CWE-457")
+    assert "<code that is the weakness>" in SEARCH_SKELETON and "{{FORM}}" in (ROOT / "prompts" / "formsearch_generator.md").read_text(encoding="utf-8")
+    try:
+        from src.agents.agents_general import Llama  # noqa: F401  (registers the CUDA path first)
+        from llama_cpp import LlamaGrammar
+    except ImportError:
+        pytest.skip("llama_cpp not installed")
+    LlamaGrammar.from_string(search_grammar("CWE-457"), verbose=False)
+    LlamaGrammar.from_string(grammar("CWE-457"), verbose=False)
