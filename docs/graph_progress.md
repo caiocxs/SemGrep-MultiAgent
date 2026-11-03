@@ -556,3 +556,338 @@ Arms, CWE-457, 4B local model (combo C), 5-fold cross-validation by variant, see
 The 30B (combo D) is run for `formsearch` and `yaml` afterwards if the memory allows (20 GB free).
 Whose rule it is: `yaml` is the model's; the three others fix the skeleton, which is our knowledge, and are reported apart from `yaml`, as the template arm is.
 Success = accepted folds of 10, then held-out recall with alerts per KLOC under 0.1; a result no better than `yaml` is reported as not better.
+
+### Result (2026-10-17, after the run)
+
+0 of 10 folds accepted in every arm (`yaml`, `template`, `form`, `formsearch`), both seeds. `formsearch` is the only arm that ever
+matches anything (train recall 18.75% on one fold, with 288 false positives; 0% on the other four), which is already below the
+31% a hand-written search-mode rule reaches on the first 120 pairs. `yaml` and `template` are valid Semgrep (when they parse at
+all) but inert: `report.valid=True`, recall 0%, 0 false positives, on almost every fold - the model writes a rule that Semgrep
+runs without complaint and that matches nothing. `form` (the taint skeleton) fails the way fact (1) predicted: a declaration is
+not a taint source in Semgrep OSS for C, so it is structurally capped at 0% recall regardless of what the model fills in. The
+`yaml` seed also lost 4 of its 5 folds to an unrelated bug (a candidate rule hung Semgrep past the subprocess timeout scanning
+the real-world negatives, which crashed the whole cross-validation process instead of being reported as an ordinary invalid-rule
+error); fixed in `gate.run_semgrep` (catches `subprocess.TimeoutExpired` and a non-JSON crash, same as a rejected rule) before
+the `template`/`form` arms ran, so this did not recur.
+
+Read as: this is not evidence against the form/formsearch idea, or against `field_correct` (not used in this run - see
+docs/graph_progress.md's note on it; none of these arms passed `--field-correct`). It is evidence that CWE-457 is a poor target
+for this pipeline at all: the hand-written ceiling was already ~31-33%, well under the 50% acceptance bar, before any model was
+involved, and the 4B model (combo C) does not even reach that ceiling. Effort moves to CWEs the gate has already shown
+potential on instead of a second attempt at CWE-457: CWE-416 (the only one with any accepted crossval folds - 2/5 in one
+combo D + template + example_mode seed - and the only one with a standing rules/accepted/ rule) and CWE-415 (0/5 accepted but
+64-65% held-out recall with combo D + yaml + example_mode, never pushed further). CWE-476 (23-25% recall) and CWE-401 (one
+noisy run, 79% recall but 36% precision) are weaker leads.
+
+## Protocol: CWE-416 and CWE-415 with the taint form and `field_correct` (written on 2026-10-18 **before** the run)
+
+Question: for the two CWEs where a taint rule's shape actually fits the bug (use-after-free: source `free($P)`, sink any later
+use of `$P`; double-free: source `free($P)`, sink a second `free($P)`), does writing the rule as the `form` skeleton beat the
+`yaml`/`template` formats already tried, and does `field_correct` (the corrector answers one field at a time instead of
+rewriting the whole rule - see src/pipeline/form.py, added 2026-10-17) beat the full-rewrite corrector on the same format? Run
+on CWE-416 and CWE-415 rather than a third try at CWE-457, since both already show real potential: CWE-416 is the only CWE
+with any accepted crossval folds (2/5, combo D + template + example_mode) and the only one with a rules/accepted/ rule;
+CWE-415 reached 64-65% held-out recall (combo D + yaml + example_mode, 0/5 accepted) but was never pushed past that one run.
+CWE-476 and CWE-401 are weaker leads, deferred to a later round.
+
+Arms, both CWEs, 4B local model (combo C - 13.4 GB free RAM at launch does not clear combo D's 20 GB bar), 5-fold
+cross-validation by variant, seeds 1 and 2, up to 6 corrections, the detector's findings as examples, the gate with the Git
+sources (acceptance: train recall of at least 50%, no Juliet false positive, at most 0.1 alerts per KLOC):
+- `form` with the grammar: the taint skeleton, full-rule corrector (the format's existing baseline);
+- `form` with the grammar and `--field-correct`: same skeleton, corrector answers one field at a time;
+- `formsearch` with the grammar: the search-mode skeleton (a second way to state the same two CWEs: for UAF, the declaration
+  and the free and the later use as one pattern with the free excluded by `pattern-not`; for double-free, two frees of the
+  same pointer as one pattern), full-rule corrector;
+- `formsearch` with the grammar and `--field-correct`.
+
+8 seed-runs per CWE, 16 total. Protected by the `gate.run_semgrep` timeout/crash fix from the CWE-457 round (2026-10-17): a
+rule that hangs or crashes Semgrep is now an ordinary invalid-rule error, not a process crash.
+Success = accepted folds, then held-out recall with alerts per KLOC under 0.1, compared against each CWE's existing best
+(CWE-416: combo D + template + example_mode's 2/5; CWE-415: the 64-65% recall baseline). `field_correct` is judged against the
+full-rewrite corrector on the same format (`form` vs `form --field-correct`, `formsearch` vs `formsearch --field-correct`),
+not against the historical yaml/template runs, which differ in more than one variable at once.
+
+### Result (2026-10-18, after the run)
+
+0 of 10 folds accepted in every one of the 16 seed-runs; neither CWE beats its existing best (CWE-416: 2/5 accepted,
+combo D + template + example_mode; CWE-415: 64-65% held-out recall, combo D + yaml + example_mode).
+
+`field_correct` made no measurable difference anywhere in this round: every `form`/`formsearch` pair (with and without
+`--field-correct`) landed on the same recall, to the fourth decimal, on both CWEs and both seeds - identical except for one
+real-world-rate number (CWE-415, `form`, seed 2: 3.44 alerts/KLOC without `--field-correct` vs 0.0235 with it, same 20%
+recall). One data point is not enough to call that an effect, but it is consistent with the field-level corrector not
+changing *what* the rule ends up detecting, only *how cheaply* it gets there (confirmed in the pre-run smoke test: ~5s per
+field-level correction vs ~44s for a full rewrite) and, perhaps, how much noise a correction that touches one field at a
+time leaves behind on the untouched fields.
+
+CWE-416: both formats stay near 0% recall regardless of `field_correct` (`form` exactly 0.0 every time; `formsearch` 0.0-2.1%).
+`formsearch` carries a real-world alert rate of 0.22-0.48/KLOC - over the 0.1 gate limit - on a rule that still detects
+almost nothing in Juliet, the same "inert at best, noisy at worst" pattern as CWE-457's `yaml`/`template` arms. The taint
+form's source/sink split does not help UAF here either: the smoke test before the run already showed the 4B model using
+`malloc(...)` as the source (an allocation, not a free) instead of `free($X)`, so the generated rule tracks the wrong event
+from the start regardless of which corrector mode follows it.
+
+CWE-415: `form` (double-free is a clean taint shape: source `free($P)`, sink a second `free($P)`) is the best arm of this
+round at 20% recall on every one of its four seed-runs, but still well under the 64-65% of the existing `yaml` +
+`example_mode` baseline, and with real false-positive cost (84-144 total, one run spiking to 3.44 alerts/KLOC).
+`formsearch` is markedly worse here (2.5-4.1% recall) - the search-mode encoding of "two frees of the same pointer" loses
+to the taint encoding, the reverse of CWE-457 where search mode was the only one that worked at all (taint could not even
+start, since a Semgrep taint source needs a value).
+
+Read as: this round answers its own question - no, stating these two CWEs as a `form`/`formsearch` skeleton does not beat
+the historical `yaml`/`template` + `example_mode` runs, and `field_correct` is neutral on outcome quality in every arm
+where it was tried alongside a format change. The variable that has actually moved results so far across every CWE tried
+is `example_mode` (`combo D + template/yaml + example_mode` is the best config for both CWE-416 and CWE-415), not the
+output format or the corrector's granularity. A follow-up that isolates `example_mode` on top of `form`/`field_correct`,
+or that just tries `example_mode` on CWE-415 at a bigger combo, is a better next step than more format variants.
+
+### Combo D repeat (2026-10-18): same 16 arms, Qwen3-Coder-30B-A3B instead of Qwen3-4B
+
+The combo C result above is confounded with model size: CWE-416's 2/5-accepted and CWE-415's 64-65%-recall baselines both
+used combo D, not combo C, so the comparison was not apples to apples. Repeated the same 16 seed-runs with combo D (paused
+once and resumed with `--resume-since` when a foreground game left too little free VRAM for the 10 offloaded GPU layers;
+see the free-RAM/GPU-contention note already in memory - the same applies to GPU memory, not only system RAM).
+
+Still 0 of 10 folds accepted everywhere - the ceiling from the combo C round holds at the bigger model too - but
+`field_correct` is no longer reasonably called neutral:
+
+- **CWE-416, `form`**: fc=False stays at exactly 0% recall both seeds (unchanged from combo C). fc=True jumps to
+  **60%/40% recall** - the single largest effect seen in either round - but at the cost of 96-614 false positives and a
+  real-world rate of 0.04-**7.25**/KLOC (seed 2), two orders of magnitude over the 0.1 gate limit. Isolating one field at a
+  time let the bigger model actually find the right source/sink relationship it could not land on in one shot; it did not
+  teach it when to stop widening the match.
+- **CWE-416, `formsearch`**: fc has no effect at all, to three decimal places (1.43%/1.48% both ways) - same conclusion as
+  combo C, the search-mode fields are not where this CWE's difficulty lives.
+- **CWE-415, `form`**: high seed variance dominates. fc=False: 32%/0%. fc=True: 40%/0% - an improvement on seed 1, no
+  change at all on seed 2 (still exactly 0%). Field-level correction cannot rescue a run whose generator picked a
+  source/sink pair so wrong that no single-field edit reaches a working shape; it only helps when the starting point is
+  already close.
+- **CWE-415, `formsearch`**: fc=False: 12.7%/2.2% (24/6 false positives, 1.4-1.5/KLOC). fc=True: 4.6%/4.1% (0/0 false
+  positives, 0.12-0.17/KLOC) - recall drops a little, but false positives disappear and the real-world rate falls by
+  roughly 10x. The same direction as the one CWE-415/combo-C data point noted above, now confirmed across both seeds of a
+  second arm: field-level correction's most reliable effect across this whole investigation is cutting real-world noise,
+  not raising recall - raising recall only happened once (CWE-416/`form`), and when it did, it brought the noise back
+  with it.
+
+Net: `field_correct` is real, but it is not a general corrector upgrade - it helps a format/CWE pair that was already
+structurally close to the answer (CWE-416's taint shape, once the bigger model engages with it) and mostly just quiets
+down the ones that were not (CWE-415's `formsearch`). Neither CWE beats its own `combo D + example_mode` baseline with any
+of these 16 runs. `example_mode` remains the only lever that has moved an accepted-folds count in this project's history;
+that, combined with `field_correct` for noise control rather than detection, is the more promising combination to try
+next, not `field_correct` alone.
+
+## Protocol: `field_correct` combined with `example_mode=pairs` (written on 2026-10-18 **before** the run)
+
+Question: the only configuration that has ever gotten crossval folds accepted in this project is CWE-416, combo D,
+`template`, `example_mode=pairs` (vulnerable/safe file pairs shown to the generator instead of the detector's findings) -
+2/5 accepted, seed 1. `field_correct`'s own best result (CWE-416, `form`, combo D) reached 40-60% recall but with
+false-positive rates 20-70x the gate's limit. Does stacking the two - `pairs` for what the generator is shown,
+`field_correct` for how the corrector fixes it - do better than either alone on the `form`/`formsearch` skeletons, which
+have never been tried with `pairs` before (the historical `pairs` run was on `template`)?
+
+Arms, both CWE-416 and CWE-415, combo D, `--example-mode pairs` added to every one, 5-fold cross-validation, seeds 1 and 2,
+up to 6 corrections, the gate with the Git sources (same acceptance bar as every prior round: train recall >= 50%, no
+Juliet false positive, <= 0.1 alerts/KLOC):
+- `form` with the grammar (baseline: pairs alone, no field_correct, not tried on this skeleton before);
+- `form` with the grammar and `--field-correct`;
+- `formsearch` with the grammar (baseline: pairs alone);
+- `formsearch` with the grammar and `--field-correct`.
+
+16 seed-runs, same structure as the two earlier `form`/`formsearch` sweeps so the three are directly comparable:
+combo C (no `example_mode`) -> combo D (no `example_mode`) -> this round (combo D + `pairs`). `example_mode=graph` reached
+higher raw recall than `pairs` in isolated historical runs (97%/86% on CWE-416, 64%/65% on CWE-415) but never got anything
+accepted, consistent with it finding real bugs but also many false positives; `pairs` is tried first here specifically
+because it is the one data point that ever cleared the gate's false-positive bar, not just the one with the highest
+recall.
+
+### Result (2026-10-19, after the run)
+
+0 of 10 folds accepted in every one of the 16 seed-runs, again. Stacking `pairs` on `field_correct` does not beat either
+lever alone, and comes with one clear negative result:
+
+- **CWE-415, `form`**: `pairs` zeroes recall outright - 0% on both seeds, with or without `field_correct` (the no-`pairs`
+  baseline was 32%/0% and 40%/0%). Showing the generator vulnerable/safe file pairs instead of detector findings is
+  actively harmful to this CWE's taint encoding, not just unhelpful.
+- **CWE-416, `formsearch`**: completely flat at ~0-1.5% recall across all four combinations of `pairs` x `field_correct` -
+  the same conclusion as every earlier round. Nothing tried on this skeleton has ever moved CWE-416's `formsearch` result;
+  the CWE's difficulty is not reachable from the search-mode encoding at all, independent of corrector or examples.
+- **CWE-416, `form`**: the only arm with real movement, and the four combinations scatter across 0%, 31%, 54%, 60%
+  recall with no consistent ranking by `pairs` or `field_correct` - e.g. `pairs` alone reached 54% on seed 1 but 0% on
+  seed 2; `pairs` + `field_correct` reached 31% on seed 1 (down from `pairs` alone) but 60% on seed 2 (up from 0%). Every
+  high-recall result pairs with heavy false positives (308-1154) and a real-world rate up to 0.11/KLOC.
+- **CWE-415, `formsearch`**: recall stays low (0-6.8%) and noisy under every combination; `pairs` does not clearly help
+  or hurt once `field_correct` is in the mix either way.
+
+The pattern across all three `form`/CWE-416 sweeps (combo C, combo D, combo D + `pairs`) is that **seed-to-seed variance
+is often larger than the effect of any lever tested**: the same exact config (`form` + `field_correct`, combo D) swung
+from 0% to 60% recall between its own two seeds in the first sweep, and `pairs` alone swung from 0% to 54% in this one.
+Two seeds is not enough to tell a real effect from this noise floor - a claim like "`pairs` helped" or "`field_correct`
+hurt" drawn from one seed's number in this round would likely reverse on a third seed. Any future round that wants to
+trust a direction (not just note that something moved) needs more than 2 seeds per arm, which trades off against the
+breadth these sweeps have favored so far (16 one-variable-at-a-time arms instead of fewer arms run deeper).
+
+Net for this whole CWE-416/CWE-415 investigation (2026-10-18 to 2026-10-19, 48 seed-runs total across three rounds):
+no format/corrector/example combination tried on `form` or `formsearch` has matched either CWE's `template`/`yaml` +
+`example_mode` baseline, and the clearest lesson is methodological rather than substantive - this project's crossval
+protocol needs more seeds before another round chases a single-seed effect size.
+
+## Protocol: stacking the two proven levers, and more seeds on the existing bests (written on 2026-10-19 **before** the run)
+
+Three follow-ups to the dashboard review of all 120 crossval runs so far, in the order decided with the user:
+
+1. **`example_mode=pairs` + `guard` + `project_apis` together**, `template`, combo D, CWE-416. Never tried: `pairs` alone is
+   the only configuration ever accepted (2/5, seed 1); `guard`+`project_apis` alone reached the highest recall of any run
+   (100%/94.9%, two seeds) but was never accepted (398/616 false positives). Stacking them tests whether `guard`'s
+   never-regress corrector plus `project_apis`'s project-specific functions can keep `pairs`' precision while pushing its
+   recall further.
+2. **`field_correct` extended to the `yaml` format**, then tried with `example_mode=graph` on CWE-415. `field_correct`
+   (src/pipeline/form.py) was form/formsearch-only because that was its original use; its field walk only looks for
+   `pattern`/`pattern-not`/`pattern-not-inside` keys, with no assumption about the surrounding shape, so it applies to any
+   parsed Semgrep rule - confirmed against the hand-written CWE-416 fixture's nested `pattern-either`/
+   `metavariable-pattern` shape, which the form/formsearch grammars never produce (test_field_correct_works_on_the_yaml_format_too).
+   `describe_field` had a latent bug this generalization exposed: a bare `pattern-not` directly under `pattern-sinks` (not
+   reachable from the form/formsearch skeletons, which only ever put `pattern-not-inside` there) was mislabeled as
+   `pattern-not-inside` in the corrector prompt; fixed alongside this change. `yaml` + `example_mode=graph` already reaches
+   64-65% recall (never accepted, combo D, no `field_correct`); this tests whether field-level correction's noise-reduction
+   effect (seen on `formsearch` in the CWE-415 round) can push that recall over the gate instead of just ignoring it the
+   way the `form`/`formsearch` rounds' noise reduction did.
+3. **More seeds (3, 4, 5) on each CWE's existing best** (`template` + `pairs` for CWE-416, `yaml` + `graph` for CWE-415,
+   both combo D, no new roles) - a direct response to the seed-variance finding from the `form`/`formsearch` rounds: with
+   only 2 seeds, "this helped" and "this didn't" are not reliably distinguishable from noise. Five seeds per config is
+   still not a lot, but it is what compute allows next.
+
+Arms (combo D throughout, 5-fold cross-validation, up to 6 corrections, the gate with the Git sources, the same
+acceptance bar as every round so far):
+- CWE-416, `template`, `--example-mode pairs --guard --project-apis`, seeds 1-2 (new combination);
+- CWE-415, `yaml`, `--example-mode graph --field-correct`, seeds 1-2 (new combination, needs the code change above);
+- CWE-416, `template`, `--example-mode pairs`, seeds 3-5 (extends the only-ever-accepted config past its original 2 seeds);
+- CWE-415, `yaml`, `--example-mode graph`, seeds 3-5 (extends the 64-65%-recall baseline past its original 2 seeds).
+
+10 seed-runs total. Success for (1) and (2) is beating `pairs` alone (2/5 accepted) or `graph` alone (65% recall)
+respectively; success for (3) is the already-reported numbers holding up across 3 more seeds rather than regressing to
+something nearer the field-correct rounds' 0%-60% swings.
+
+### Result (2026-10-19, after the run)
+
+Neither new combination beat its base config, and the extra seeds answer the question they were run for.
+
+- **CWE-416, `pairs` + `guard` + `project_apis`** (2 seeds): 97.1%/80.3% held-out recall, but 799/619 false positives and
+  25.6-47.3 real-world alerts/KLOC - both far noisier than `pairs` alone's own worst seed (320 FP, 5.5/KLOC). Stacking
+  `guard`+`project_apis` on top of `pairs` keeps the ceiling `guard`+`project_apis` already had alone (close to 100%
+  recall) and brings its false-positive problem with it; it does not inherit `pairs`' quiet real-world behavior. 0/5
+  accepted both seeds, same as every arm this round.
+- **CWE-416, `pairs` alone, extended to 5 seeds**: 77.6% (accepted, 2/5), 97.1%, 97.8%, 91.4%, 88.6%. This is the opposite
+  of what the `form`/`formsearch` rounds' seed swings predicted: recall is consistently high (78-98%) across every seed -
+  the config is not unstable on recall. What is fragile is the false-positive count sitting close to the train-side gate
+  (84-320 across seeds, only seed 1's 138 happened to land on the accepted side of the cutoff). The one accepted result
+  from 2026-10-09 was not a fluke of recall; it was a fluke of exactly where that seed's false-positive count fell
+  relative to a hard threshold - a real distinction the first two seeds alone could not show.
+- **CWE-415, `graph` + `field_correct`** (2 seeds): 20.6%/78.2% recall, 12/498 false positives. Compare to `graph` alone's
+  same two seeds (63.8%/64.8%, 348/456 false positives, already on record from 2026-10-15): `field_correct` made seed 1
+  markedly worse (63.8% to 20.6%) and left seed 2 about the same (64.8% to 78.2%, with the same order of false
+  positives). No sign of the noise-reduction effect seen on CWE-415's `formsearch` in the previous round; on free-form
+  `yaml`, a structurally broken attempt (confirmed in the pre-run smoke test, where the generator put
+  `metavariable-pattern` at the top level) still consumes a correction cycle even with the new structural-fallback fix,
+  since the fallback only changes *which* corrector runs on the bad attempt, not how many of the limited attempts are
+  available afterward for content-level fixes.
+- **CWE-415, `graph` alone, extended to 5 seeds**: 63.8%, 64.8%, 47.3%, 43.3%, 76.3% - a real spread (43-76%), narrower
+  than the extreme 0-60% swings `form`/`formsearch` showed, but still a 33-point range across 5 seeds of the identical
+  config. The original 2-seed estimate (63.8%/64.8%, both close together) understated how much this number moves; five
+  seeds puts the honest range at roughly 45-75%, not 64% the first two happened to agree on.
+
+Net: the dashboard's two leads do not combine or extend into anything better. `pairs`+`guard`+`project_apis` is worse than
+`pairs` alone on the only axis that matters (false positives). `field_correct` on `yaml` repeats CWE-415's established
+pattern of high seed variance rather than controlling it. The most load-bearing result of this round is methodological,
+again: the 2026-10-09 "2/5 accepted" number for CWE-416 holds up at 5 seeds (every seed reaches comparable recall; only
+the false-positive count decides acceptance), while the 2026-10-15 "64-65%" number for CWE-415 does not (45-75% is the
+honest range at 5 seeds). Two seeds were enough to trust CWE-416's recall but not CWE-415's - there was no way to know
+that in advance, which is itself the argument for defaulting to more seeds before reporting a number as a CWE's
+"result" rather than deciding case by case after the fact.
+
+## Protocol: `pairs` + `guard` without `project_apis` (written on 2026-10-19 **before** the run)
+
+The 5-seed extension of `pairs` alone showed recall is stable (78-98%) across every seed; what decides acceptance is the
+train-side false-positive count sitting close to the gate's cutoff (84-320 across seeds, only seed 1's 138 landed on the
+accepted side). `pairs` + `guard` + `project_apis` made this worse (619-799 false positives) rather than better.
+`project_apis` is the more likely source of that noise (it adds project-specific function names to the prompt, which on
+a different real-world codebase than train could easily fire on hero-named functions); `guard` by itself (never let a
+correction score worse than the best rule so far) is the one piece of that combination aimed directly at the identified
+problem - stopping the corrector from drifting to a noisier rule - without `project_apis`'s extra surface.
+
+Arm: CWE-416, combo D, `template`, `--example-mode pairs --guard` (no `--project-apis`), seeds 1-5, 5-fold
+cross-validation, up to 6 corrections, the gate with the Git sources, same acceptance bar as every round so far.
+5 seeds from the start, matching the now-5-seed `pairs`-alone baseline for a fair comparison instead of needing a
+second extension pass later.
+Success: more of the 5 seeds land under the false-positive/negative-rate limit than `pairs` alone's 1 of 5, without
+giving up `pairs`' recall.
+
+### Result (2026-10-20, after the run)
+
+seed1: 1/5 accepted, 91.4% recall, 102 FP, 3.09/KLOC. seed2: 0/5, 89.2%, 12 FP, 0.75/KLOC. seed3: 0/5, 100%, 216 FP,
+6.79/KLOC. seed4: 1/5 accepted, 89.2%, 90 FP, 2.36/KLOC. seed5: 0/5, 91.4%, 168 FP, 5.67/KLOC.
+
+This is the first configuration in three rounds to beat its predecessor, on the metric that matters: `pairs` alone got
+an accepted fold in 1 of 5 seeds (seed 1, 2/5 folds there); `pairs` + `guard` (no `project_apis`) gets one in 2 of 5
+seeds (seed 1 and seed 4, 1/5 folds each) - the total count of accepted folds across all 25 is the same either way (2),
+but it is no longer concentrated in a single lucky seed. Recall is also tighter: 89.2-100% across every seed, against
+`pairs` alone's 77.6-97.8%. `guard`'s mechanism (never let a correction score worse than the best rule so far) does what
+it was meant to here without `project_apis`'s extra noise: it holds the line on recall while giving the false-positive
+count more chances across a run to land under the gate, rather than fixing the count outright (it still ranges 12-216
+test-side FP across seeds - still fragile, just less rarely lucky).
+
+This answers the open question from the dashboard review in the most useful way available: `guard` alone is a real,
+if modest, improvement on `pairs` for CWE-416/`template`, worth keeping as this project's best-known configuration;
+`project_apis` is confirmed as the piece that was hurting rather than helping. Given three rounds of combination search
+(form/formsearch + field_correct, pairs + field_correct, pairs + guard + project_apis, graph + field_correct) produced
+one real improvement and otherwise reproduced or worsened what was already known, this is a reasonable point to stop
+searching combinations for CWE-416/CWE-415 and treat `template` + `pairs` + `guard` (CWE-416) and `yaml` + `graph`
+(CWE-415, unresolved, 45-75% recall) as this investigation's standing results.
+
+## Why free/use graph tracking does not translate into a quiet Semgrep rule (written 2026-11-02, answering a question about the unsolved CWEs)
+
+The question: for the CWEs the rule synthesis never solved, could the model be helped by explicit memory nodes - tracking
+when something is freed, then following where it is used afterward? That tracking already exists and is not the missing
+piece; the results already in this log explain what it does and does not fix.
+
+**The free-to-use walk is built and works as a standalone detector.** `src/graph/paths.py`'s `use_after_free` builds a
+graph of events (free, use, alloc, reset...) per function with control-flow edges, and walks forward from each `free` to
+the `use`s of the same variable (and its `->field`, `[i]`, derived paths) reachable with no intervening reassignment.
+On Juliet: 134/138 CWE-416 cases, 0 false positives. On real code never used to develop the extractor: tmux, PostgreSQL,
+SQLite pass the 0.1-alerts/KLOC bar; vim fails because one wrong "frees its parameter on some path" call summary
+produces 179 of 234 alerts in a single function. `double_free` (CWE-415) and `memory_leak` (CWE-401) are the same idea
+applied to other event pairs, weaker on Juliet (150/272 and 648/868) because some cases need information the walk does
+not have (a double free gated by a global flag; a leak whose flag lives in a support file not in the data).
+
+**Handing the model these findings as examples (`--example-mode graph`, "the model writes the rule from the graph's
+findings" above) raises recall and lowers precision together, for a specific, diagnosed reason.** CWE-416, combo D:
+recall 71.6% to 91.6% going from detector to graph findings, but precision 89.4% to 69.8%, Juliet false positives 9.0 to
+29.4, real-world alerts/KLOC 2.53 to 4.76 - broader, not quieter. Read at the time: "the rule it wrote is the generic
+taint rule whose sink is any use of the pointer, which also matches the `free` statement that marks it; a finding that
+says 'released at line a and used at line b' does not tell the model to leave line a out." The graph's information about
+*where* the defect is does not carry the information about *what the rule must exclude* - that line is itself a "use" by
+the sink pattern's own definition, and nothing in the finding's description says to subtract it.
+
+**CWE-476 is the clearest case of a limit in the rule language itself, not in the model or the information given to it.**
+The graph's null-dereference query needs "no decision between the NULL and the dereference" to stay quiet (see the three
+things tried and dropped in the CWE-476 protocol above: a plain reachability walk gave 8-13 alerts/KLOC on development
+projects before that restriction brought it to 0.01-0.08). A Semgrep pattern has no way to state "no decision in
+between"; given the graph's findings as examples, the 30B model's rules either matched nothing (5 of 10 folds) or
+matched every dereference (51-80% recall with 110-145 alerts/KLOC) - there is no pattern in between for it to write.
+
+**A program compiling the same free/use logic directly into a Semgrep rule (no model) does reach the gate - and that
+is also informative.** "Compiling the graph query" (CWE-416, `fixed_deref`, the alternative-generators round) gets
+10 of 10 folds accepted: 52.0% recall, 0 Juliet false positives, 0.06 alerts/KLOC. But its 22 real-world alerts, all
+read by hand, were all false: a loop freeing one element and using the next, a reassignment through a macro or a
+function the extractor could not see, a hashmap entry re-added on another path - exactly the ownership and call-summary
+limits the graph arm's own project log already names as open problems. Passing the gate (quiet, detects half of Juliet)
+is a property of the rule's behavior on this benchmark and this real-code sample, not evidence that its alerts are real
+bugs.
+
+Net: tracking a freed variable forward to its uses, the idea behind the question, is not a missing capability - it is
+already the graph arm's core query, already measured on eight to twelve real-world projects, and already shown to carry
+real signal (it is what let the 30B model's recall jump on CWE-416 and CWE-415 when used as examples). What breaks the
+pipeline is downstream of that: a Semgrep rule general enough to run on code the walk has not seen needs to state
+*exclusions* (the defining line is not a use; a path has no intervening test) that the graph's own representation
+carries naturally (walk one way, stop at a condition) and Semgrep's pattern language cannot always say. Where a program
+writes the Semgrep rule directly from the graph's logic instead of asking a model to infer it from examples, the
+acceptance gate can be satisfied (CWE-416, 10 of 10) without the rule's alerts being any more true than before.
