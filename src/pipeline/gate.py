@@ -381,12 +381,23 @@ def run_semgrep(rule_path, targets, timeout=600, with_functions=True):
         configs += ["--config", str(FUNCTION_RULE)]
     for chunk in _chunks([os.path.abspath(t) for t in targets]):
         cmd = [exe, *SEMGREP_ARGS, *configs, *chunk]
-        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
-                              cwd=_neutral_cwd())
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=timeout,
+                                  cwd=_neutral_cwd())
+        except subprocess.TimeoutExpired:
+            # A candidate rule can do this (e.g. a pattern that backtracks catastrophically on real-world
+            # code): treated as an ordinary invalid-rule error so one bad candidate doesn't crash the whole
+            # generator -> corrector loop, exactly like the JSON-decode failure below.
+            merged["errors"].append({"level": "error", "message": (
+                f"semgrep did not finish within {timeout}s on {len(chunk)} files "
+                "(the rule likely matches too much, or a pattern backtracks catastrophically).")})
+            break
         try:
             data = json.loads(proc.stdout)
         except json.JSONDecodeError:
-            raise RuntimeError(f"semgrep failed (exit {proc.returncode}): {proc.stderr.strip()[-2000:]}")
+            merged["errors"].append({"level": "error",
+                                     "message": f"semgrep failed (exit {proc.returncode}): {proc.stderr.strip()[-2000:]}"})
+            break
         merged["results"] += data.get("results", [])
         merged["errors"] += data.get("errors", [])
         if _rule_errors(data["errors"] if "errors" in data else []):

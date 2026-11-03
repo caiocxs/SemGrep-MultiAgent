@@ -1,9 +1,11 @@
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
-from src.pipeline.gate import case_id, collect_files, evaluate, function_role
+from src.pipeline import gate
+from src.pipeline.gate import case_id, collect_files, evaluate, function_role, run_semgrep
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures" / "juliet" / "cwe416"
@@ -40,6 +42,40 @@ def test_function_role():
     assert function_role("helperGood") == "good"
     assert function_role("staticReturnsTrue") is None
     assert function_role(None) is None
+
+
+def test_run_semgrep_turns_a_timeout_into_an_ordinary_rule_error(monkeypatch):
+    """A rule that makes semgrep hang (e.g. catastrophic backtracking on real-world code) must not crash the
+    generator -> corrector loop: it becomes the same kind of error as a rejected rule."""
+    monkeypatch.setattr(gate.shutil, "which", lambda name: "semgrep")
+    monkeypatch.setattr(gate.subprocess, "run",
+                        lambda cmd, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, kwargs["timeout"])))
+    data = run_semgrep("rule.yaml", ["a.c", "b.c"], timeout=5)
+    assert data["results"] == []
+    assert data["errors"] and "did not finish within 5s" in data["errors"][0]["message"]
+
+
+def test_run_semgrep_turns_a_crash_into_an_ordinary_rule_error(monkeypatch):
+    """semgrep exiting without valid JSON on stdout (a crash) must not raise either."""
+    class FakeProc:
+        returncode = 2
+        stdout = "not json"
+        stderr = "boom"
+
+    monkeypatch.setattr(gate.shutil, "which", lambda name: "semgrep")
+    monkeypatch.setattr(gate.subprocess, "run", lambda cmd, **kwargs: FakeProc())
+    data = run_semgrep("rule.yaml", ["a.c"], timeout=5)
+    assert data["results"] == []
+    assert data["errors"] and "semgrep failed (exit 2)" in data["errors"][0]["message"]
+
+
+def test_evaluate_reports_a_timeout_as_an_invalid_rule_instead_of_crashing(monkeypatch):
+    monkeypatch.setattr(gate.shutil, "which", lambda name: "semgrep")
+    monkeypatch.setattr(gate.subprocess, "run",
+                        lambda cmd, **kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired(cmd, kwargs["timeout"])))
+    report = evaluate("rule.yaml", [f"{PREFIX}malloc_free_char_01_bad.c"], [], timeout=5)
+    assert not report.valid
+    assert "did not finish" in report.errors[0]
 
 
 @needs_semgrep
