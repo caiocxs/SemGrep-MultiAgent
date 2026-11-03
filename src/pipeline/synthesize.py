@@ -29,11 +29,11 @@ import time
 from pathlib import Path
 
 from src.config import load_combo
-from src.pipeline import roles
+from src.pipeline import form, roles
 from src.pipeline.findings import load_findings, number_lines, render_example, select_examples
 from src.pipeline.gate import collect_files, evaluate
 from src.pipeline.project_apis import describe as describe_project
-from src.pipeline.rules import dump_rule, forbidden_identifiers, parse_response, write_rule
+from src.pipeline.rules import check_structure, dump_rule, forbidden_identifiers, parse_response, write_rule
 from src.pipeline.spec import parse_response as parse_spec_response
 from src.pipeline.spec import parse_template_response
 from src.pipeline.split import flow_variant, fold_split, split_files, split_negatives
@@ -128,7 +128,7 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
                samples=1, temperature=None, stop_on_pass=False,
                negatives=None, max_negative_rate=0.1, max_negative_files=None, fold=None, folds=None,
                docs=True, history=False, critic=False, merge=False, example_mode="findings", diagnose=True,
-               guard=False, project_apis=False, grammar=False):
+               guard=False, project_apis=False, grammar=False, field_correct=False):
     """
     Runs the loop for one CWE and returns the run log (also written to disk).
     `complete(role, prompt) -> (text, seconds)` defaults to the combo's local
@@ -161,6 +161,13 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
     `guard` makes the corrector always edit the best rule so far: a correction whose `_score` is lower than that
     rule's is kept in the log but discarded, and the corrector gets the best rule again with a note on what failed
     (KNighter's refinement accepts a change only when it does not lose what the checker already had).
+
+    `field_correct` (form/formsearch/yaml only): the corrector answers with the new value of a single field of the
+    rule - one alternative, one `pattern-not`, one sink, the source... - instead of rewriting the whole thing;
+    the field cycles by attempt number through every field the rule's current structure has, so two consecutive
+    corrections never target the same one (which is also what stops a model stuck repeating the same full rule
+    verbatim: see `step`'s `seen` dict). Falls back to a normal full-rule correction for an attempt whose rule
+    has no field to point at (e.g. the YAML did not parse into anything at all).
     `project_apis` adds to the prompts the memory functions the project in `negatives` defines (see project_apis.py):
     the rule becomes specific to that project.
 
@@ -180,6 +187,8 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
     }
     if output_format not in formats:
         raise ValueError(f"Unknown output format: {output_format}")
+    if field_correct and output_format not in ("form", "formsearch", "yaml"):
+        raise ValueError("field_correct is defined for the form, formsearch and yaml formats only")
     if example_mode not in ("findings", "graph", "pairs", "none"):
         raise ValueError(f"Unknown example mode: {example_mode}")
     spec_mode = output_format in ("spec", "template")  # the model answers in JSON, not YAML
@@ -232,7 +241,6 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
     docs_text = (load_pattern_docs() if pattern_docs_only else load_docs()) if docs else NO_DOCS_NOTE
     common["PATTERN_DOCS" if pattern_docs_only else "SEMGREP_DOCS"] = docs_text
     if output_format in ("form", "formsearch"):
-        from src.pipeline import form
         common["FORM"] = form.SKELETON if output_format == "form" else form.SEARCH_SKELETON
     forbidden = forbidden_identifiers(examples)
     rule_id = f"gen-{cwe.lower()}"
@@ -267,17 +275,28 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
             from src.pipeline.spec import TEMPLATE_SCHEMA
             held = {"json_schema": TEMPLATE_SCHEMA}  # a JSON schema for the template
         elif output_format in ("form", "formsearch"):
-            from src.pipeline import form
             held = {"grammar": (form.grammar if output_format == "form" else form.search_grammar)(cwe)}  # the skeleton of the form
         else:
             raise ValueError("grammar is defined for the template and form formats only")
         call = lambda r, pr: (complete(r, pr, **held) if temperature is None else complete(r, pr, temperature=temperature, **held))
+    field_call = None
+    if field_correct:
+        field_call = (lambda r, pr: complete(r, pr, grammar=form.FIELD_GRAMMAR)) if temperature is None else \
+            (lambda r, pr: complete(r, pr, temperature=temperature, grammar=form.FIELD_GRAMMAR))
 
-    def step(k, n, role, prompt, seen):
-        """One model call, parsed and graded by the gate. Returns the attempt and the feedback for the corrector."""
+    def step(k, n, role, prompt, seen, field=None):
+        """
+        One model call, parsed and graded by the gate. Returns the attempt and the feedback for the corrector.
+        `field`, with `field_correct`, is (base_rule_doc, path, key): the prompt only asked for that one field's
+        new value, which is spliced into a copy of base_rule_doc instead of parsing a whole rule from the answer.
+        """
         print(f"[{n}] {role}: prompting ({len(prompt)} chars)...")
-        text, seconds = call(role, prompt)
-        yaml_text, rule_doc, problems = parse(text, rule_id, cwe, forbidden)
+        text, seconds = (field_call if field else call)(role, prompt)
+        if field is None:
+            yaml_text, rule_doc, problems = parse(text, rule_id, cwe, forbidden)
+        else:
+            base_doc, path, key = field
+            yaml_text, rule_doc, problems = form.apply_field(text, base_doc, path, key, forbidden)
 
         file_name = f"attempt_{n}.yaml" if samples == 1 else f"sample{k}_attempt_{n}.yaml"
         if role == "merger":
@@ -304,7 +323,7 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         current = yaml_text if spec_mode else (dump_rule(rule_doc) if rule_doc else yaml_text)
         ok = bool(report and report.passed(min_recall))
         attempt = {"sample": k, "n": n, "role": role, "seconds": round(seconds, 2), "prompt_chars": len(prompt),
-                   "response": text, "rule_path": str(rule_path) if rule_path else None,
+                   "response": text, "rule_path": str(rule_path) if rule_path else None, "rule_doc": rule_doc,
                    "rule_source": (current or text).strip(), "problems": problems, "passed": ok, "report": report}
         status = "PASSED" if ok else "failed"
         summary = f"recall={report.recall:.0%} fp={len(report.false_positives)}" if report and report.valid else \
@@ -325,11 +344,11 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
 
     def run_sample(k):
         """One independent generator -> gate -> corrector loop (and, with `merge`, a final merge); returns its attempts."""
-        prompt, role = first_prompt, "generator"
+        prompt, role, field = first_prompt, "generator", None
         attempts, seen = [], {}  # seen: rule text -> (attempt number, its feedback)
         base = None  # with `guard`: (attempt, feedback) of the best tested rule so far
         for n in range(max_fix_attempts + 1):
-            attempt, feedback = step(k, n, role, prompt, seen)
+            attempt, feedback = step(k, n, role, prompt, seen, field=field)
             attempts.append(attempt)
             if attempt["passed"]:
                 break
@@ -346,9 +365,24 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
             if critic and report is not None and report.valid:
                 review = review_by_critic(source, source_feedback, attempts)
                 attempt["review"] = review
-            prompt = render(corrector_template, **common, FEEDBACK=roles.with_review(source_feedback, review),
-                            HISTORY=roles.history_block(attempts[:-1]) if history else "",
-                            MISSED_CODE=missed_code(report), RULE=source["rule_source"])
+            # A field edit can only change what a pattern says, never where an operator sits: skip straight to a
+            # full rewrite when the rule's shape itself is wrong (misplaced operator, two top-level matchers...),
+            # which only matters on the free-form yaml format - form/formsearch are grammar-held, always sound.
+            rule_fields = (form.fields(source["rule_doc"])
+                           if field_correct and source["rule_doc"] and not check_structure(source["rule_doc"])
+                           else [])
+            if rule_fields:
+                path, key, value = rule_fields[n % len(rule_fields)]
+                prompt = render("field_corrector", **common, FEEDBACK=roles.with_review(source_feedback, review),
+                                HISTORY=roles.history_block(attempts[:-1]) if history else "",
+                                MISSED_CODE=missed_code(report), RULE=source["rule_source"],
+                                FIELD_DESCRIPTION=form.describe_field(path, key), FIELD_VALUE=json.dumps(value))
+                field = (source["rule_doc"], path, key)
+            else:
+                prompt = render(corrector_template, **common, FEEDBACK=roles.with_review(source_feedback, review),
+                                HISTORY=roles.history_block(attempts[:-1]) if history else "",
+                                MISSED_CODE=missed_code(report), RULE=source["rule_source"])
+                field = None
             role = "corrector"
 
         if merge and not attempts[-1]["passed"]:
@@ -392,7 +426,7 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         "run_id": run_id, "cwe": cwe, "combo": combo["name"], "seed": seed, "format": output_format, "min_recall": min_recall,
         "fold": fold, "folds": folds, "docs": docs,
         "roles": {"history": history, "critic": critic, "merge": merge, "example_mode": example_mode, "diagnose": diagnose,
-                  "guard": guard, "project_apis": project_apis, "grammar": grammar},
+                  "guard": guard, "project_apis": project_apis, "grammar": grammar, "field_correct": field_correct},
         "models": {r: combo["roles"][r]["model"]["name"]
                    for r in ("generator", "corrector") + (("critic",) if critic else ()) + (("merger",) if merge else ())},
         "split": {"test_variants": test_variants, "train_bad": len(train_bad), "train_good": len(train_good),
@@ -400,7 +434,8 @@ def synthesize(cwe, combo_name, bad_files, good_files, log_dirs, complete=None, 
         "negatives": {"root": str(negatives), "train_files": len(train_neg), "test_files": len(test_neg),
                       "max_rate": rate_limit} if negatives else None,
         "findings": len(findings), "examples": shown_examples,
-        "attempts": [{**a, "report": a["report"].to_dict() if a["report"] else None} for a in attempts],
+        "attempts": [{**{k: v for k, v in a.items() if k != "rule_doc"},
+                      "report": a["report"].to_dict() if a["report"] else None} for a in attempts],
         "samples": samples, "temperature": temperature, "sample_summary": sample_summary,
         "samples_passed": sum(s["passed"] for s in sample_summary),
         "best_sample": best["sample"], "best_attempt": best["n"], "accepted": accepted,
@@ -470,6 +505,9 @@ def main():
     parser.add_argument("--project-apis", action="store_true",
                         help="Tell the prompts which memory functions the --negatives project defines (makes the rule project-specific)")
     parser.add_argument("--grammar", action="store_true", help="Hold the decoder to the JSON schema of the template (template format only)")
+    parser.add_argument("--field-correct", action="store_true",
+                        help="form/formsearch/yaml only: the corrector answers one field at a time (cycling through the "
+                             "rule's fields by attempt number) instead of rewriting the whole rule")
     parser.add_argument("--no-docs", action="store_true",
                         help="Leave the Semgrep documentation out of the generator and corrector prompts (ablation)")
     args = parser.parse_args()
@@ -484,7 +522,7 @@ def main():
         max_negative_files=args.negatives_max_files, fold=args.fold, folds=args.folds,
         rules_dir=Path(args.rules_dir), docs=not args.no_docs, history=args.history, critic=args.critic,
         merge=args.merge, example_mode=args.example_mode, diagnose=not args.no_diagnosis,
-        guard=args.guard, project_apis=args.project_apis, grammar=args.grammar,
+        guard=args.guard, project_apis=args.project_apis, grammar=args.grammar, field_correct=args.field_correct,
     )
 
 

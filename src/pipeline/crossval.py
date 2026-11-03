@@ -87,7 +87,7 @@ def format_table(summary):
 
 
 DEFAULT_ROLES = {"history": False, "critic": False, "merge": False, "example_mode": "findings", "diagnose": True,
-                 "guard": False, "project_apis": False, "grammar": False}
+                 "guard": False, "project_apis": False, "grammar": False, "field_correct": False}
 
 
 def _expected(kwargs):
@@ -194,6 +194,8 @@ def main():
     parser.add_argument("--example-mode", choices=("findings", "graph", "pairs", "none"), default="findings")
     parser.add_argument("--no-diagnosis", action="store_true")
     parser.add_argument("--grammar", action="store_true", help="Hold the decoder to the JSON schema of the template")
+    parser.add_argument("--field-correct", action="store_true",
+                        help="form/formsearch/yaml only: the corrector answers one field at a time instead of rewriting the whole rule")
     parser.add_argument("--guard", action="store_true")
     parser.add_argument("--project-apis", action="store_true")
     parser.add_argument("--resume-since", default=None, metavar="YYYYMMDD-HHMMSS",
@@ -208,7 +210,7 @@ def main():
         negatives=args.negatives, max_negative_rate=args.max_negative_rate,
         max_negative_files=args.negatives_max_files, docs=not args.no_docs, history=args.history,
         critic=args.critic, merge=args.merge, example_mode=args.example_mode, diagnose=not args.no_diagnosis,
-        guard=args.guard, project_apis=args.project_apis, grammar=args.grammar,
+        guard=args.guard, project_apis=args.project_apis, grammar=args.grammar, field_correct=args.field_correct,
     )
 
 
